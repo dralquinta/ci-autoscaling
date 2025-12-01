@@ -31,14 +31,14 @@ info() {
 }
 
 cmd() {
-    echo -e "${BLUE}[CMD]${NC} $1"
+    echo -e "${YELLOW}[CMD]${NC} ${YELLOW}$1${NC}"
 }
 
-# Check if deploy.env is sourced
+# Check if app.env is sourced
 if [ -z "$OCI_COMPARTMENT_OCID" ] || [ -z "$LB_SUBNET_OCID" ]; then
-    error "Required environment variables are not set. Please source deploy.env first:
+    error "Required environment variables are not set. Please source app.env first:
     
-    source deploy.env
+    source app.env
     
 Then run this script again."
 fi
@@ -169,6 +169,9 @@ create_load_balancer() {
             log "Listener '$LISTENER_NAME' already exists"
         fi
         
+        # Update env files with existing LB_OCID to ensure idempotency
+        update_env_files "$LB_OCID"
+        
         display_lb_info
         return 0
     fi
@@ -219,6 +222,9 @@ create_load_balancer() {
     # Create HTTP listener
     create_listener
     
+    # Update env files with LB_OCID
+    update_env_files "$LB_OCID"
+    
     # Display information
     display_lb_info
 }
@@ -261,6 +267,43 @@ create_listener() {
     log "HTTP listener '$LISTENER_NAME' created successfully"
 }
 
+# Update LB_OCID in env files
+update_env_files() {
+    local lb_ocid="$1"
+    
+    log "Updating LB_OCID in configuration files..."
+    
+    # Update app.env
+    if [ -f "app.env" ]; then
+        if grep -q "^export LB_OCID=" app.env; then
+            # Update existing LB_OCID
+            sed -i "s|^export LB_OCID=.*|export LB_OCID=\"$lb_ocid\"|" app.env
+            log "Updated LB_OCID in app.env"
+        else
+            # Append LB_OCID
+            echo "export LB_OCID=\"$lb_ocid\"" >> app.env
+            log "Added LB_OCID to app.env"
+        fi
+    else
+        warn "app.env not found, skipping update"
+    fi
+    
+    # Update autoscaling/autoscaling.env
+    if [ -f "autoscaling/autoscaling.env" ]; then
+        if grep -q "^export LB_OCID=" autoscaling/autoscaling.env; then
+            # Update existing LB_OCID
+            sed -i "s|^export LB_OCID=.*|export LB_OCID=\"$lb_ocid\"|" autoscaling/autoscaling.env
+            log "Updated LB_OCID in autoscaling/autoscaling.env"
+        else
+            # Append LB_OCID
+            echo "export LB_OCID=\"$lb_ocid\"" >> autoscaling/autoscaling.env
+            log "Added LB_OCID to autoscaling/autoscaling.env"
+        fi
+    else
+        warn "autoscaling/autoscaling.env not found, skipping update"
+    fi
+}
+
 # Display Load Balancer information
 display_lb_info() {
     if [ -z "$LB_OCID" ]; then
@@ -293,10 +336,12 @@ display_lb_info() {
     log "Type:          Public Load Balancer"
     log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    log "IMPORTANT: Save this Load Balancer OCID for container deployments:"
+    log "Load Balancer OCID has been automatically saved to:"
     echo ""
-    echo -e "    ${GREEN}export LB_OCID=$LB_OCID${NC}"
-    echo -e "    ${GREEN}echo 'export LB_OCID=$LB_OCID' >> deploy.env${NC}"
+    echo -e "    ${GREEN}✓ app.env${NC}"
+    echo -e "    ${GREEN}✓ autoscaling/autoscaling.env${NC}"
+    echo ""
+    log "OCID: $LB_OCID"
     echo ""
     log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
@@ -347,7 +392,7 @@ destroy_load_balancer() {
     log "OCID: $LB_OCID"
     log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    log "Remember to remove LB_OCID from deploy.env if you added it"
+    log "Note: You may want to remove LB_OCID from app.env and autoscaling/autoscaling.env"
 }
 
 # Parse command line arguments

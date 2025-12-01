@@ -30,6 +30,10 @@ info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
 
+cmd() {
+    echo -e "${YELLOW}[CMD]${NC} ${YELLOW}$1${NC}"
+}
+
 # Check if autoscaling.env is sourced
 if [ -z "$COMPARTMENT_OCID" ] || [ -z "$LB_OCID" ]; then
     error "Required environment variables are not set. Please source autoscaling.env first:
@@ -147,6 +151,7 @@ create_functions_app() {
     log "Creating Functions Application: $FUNCTIONS_APP_NAME"
     
     # Check if app already exists
+    cmd "oci fn application list --compartment-id $COMPARTMENT_OCID --display-name $FUNCTIONS_APP_NAME --lifecycle-state ACTIVE"
     EXISTING_APP=$(oci fn application list \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$FUNCTIONS_APP_NAME" \
@@ -160,6 +165,7 @@ create_functions_app() {
     fi
     
     # Create new application
+    cmd "oci fn application create --compartment-id $COMPARTMENT_OCID --display-name $FUNCTIONS_APP_NAME --subnet-ids '[\"$FUNCTIONS_SUBNET_OCID\"]'"
     FUNCTIONS_APP_OCID=$(oci fn application create \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$FUNCTIONS_APP_NAME" \
@@ -185,6 +191,7 @@ deploy_function() {
     
     # Run fn deploy with 3 minute timeout (fn hangs after successful deployment)
     # Disable errexit temporarily
+    cmd "fn deploy --app $FUNCTIONS_APP_NAME"
     set +e
     timeout 180 fn deploy --app "$FUNCTIONS_APP_NAME" > /dev/null 2>&1
     local EXIT_CODE=$?
@@ -202,6 +209,7 @@ deploy_function() {
     
     # Verify function was deployed successfully
     sleep 3
+    cmd "oci fn function list --application-id $FUNCTIONS_APP_OCID --display-name $FUNCTION_NAME --lifecycle-state ACTIVE"
     local FUNCTION_OCID=$(oci fn function list \
         --application-id "$FUNCTIONS_APP_OCID" \
         --display-name "$FUNCTION_NAME" \
@@ -245,6 +253,7 @@ configure_function_env() {
 }
 EOF
     
+    cmd "oci fn function update --function-id $FUNCTION_OCID --config file://$CONFIG_FILE --force"
     set +e
     timeout 60 oci fn function update \
         --function-id "$FUNCTION_OCID" \
@@ -267,6 +276,7 @@ create_notification_topic() {
     log "Creating notification topic: $NOTIFICATION_TOPIC_NAME"
     
     # Check if topic already exists
+    cmd "oci ons topic list --compartment-id $COMPARTMENT_OCID --name $NOTIFICATION_TOPIC_NAME --lifecycle-state ACTIVE"
     EXISTING_TOPIC=$(oci ons topic list \
         --compartment-id "$COMPARTMENT_OCID" \
         --name "$NOTIFICATION_TOPIC_NAME" \
@@ -280,6 +290,7 @@ create_notification_topic() {
     fi
     
     # Create new topic
+    cmd "oci ons topic create --compartment-id $COMPARTMENT_OCID --name $NOTIFICATION_TOPIC_NAME --description 'Notifications for CI autoscaling alarms'"
     NOTIFICATION_TOPIC_OCID=$(oci ons topic create \
         --compartment-id "$COMPARTMENT_OCID" \
         --name "$NOTIFICATION_TOPIC_NAME" \
@@ -291,12 +302,49 @@ create_notification_topic() {
     # Add email subscription if configured
     if [ -n "$NOTIFICATION_EMAIL" ]; then
         log "Creating email subscription for: $NOTIFICATION_EMAIL"
+        cmd "oci ons subscription create --compartment-id $COMPARTMENT_OCID --topic-id $NOTIFICATION_TOPIC_OCID --protocol EMAIL --subscription-endpoint $NOTIFICATION_EMAIL"
         oci ons subscription create \
             --compartment-id "$COMPARTMENT_OCID" \
             --topic-id "$NOTIFICATION_TOPIC_OCID" \
             --protocol "EMAIL" \
             --subscription-endpoint "$NOTIFICATION_EMAIL" > /dev/null
         warn "Please check your email and confirm the subscription"
+    fi
+}
+
+# Subscribe function to notification topic
+subscribe_function_to_topic() {
+    local FUNCTION_OCID=$1
+    local FUNCTION_NAME=$2
+    
+    log "Subscribing $FUNCTION_NAME to notification topic..."
+    
+    # Check if subscription already exists
+    cmd "oci ons subscription list --compartment-id $COMPARTMENT_OCID --topic-id $NOTIFICATION_TOPIC_OCID"
+    local EXISTING_SUB=$(oci ons subscription list \
+        --compartment-id "$COMPARTMENT_OCID" \
+        --topic-id "$NOTIFICATION_TOPIC_OCID" \
+        --query "data[?endpoint=='$FUNCTION_OCID'].id | [0]" \
+        --raw-output 2>/dev/null || echo "")
+    
+    if [ -n "$EXISTING_SUB" ] && [ "$EXISTING_SUB" != "null" ]; then
+        log "Function subscription already exists: $EXISTING_SUB"
+        return 0
+    fi
+    
+    # Create function subscription
+    cmd "oci ons subscription create --compartment-id $COMPARTMENT_OCID --topic-id $NOTIFICATION_TOPIC_OCID --protocol ORACLE_FUNCTIONS --subscription-endpoint $FUNCTION_OCID"
+    local SUB_OCID=$(oci ons subscription create \
+        --compartment-id "$COMPARTMENT_OCID" \
+        --topic-id "$NOTIFICATION_TOPIC_OCID" \
+        --protocol "ORACLE_FUNCTIONS" \
+        --subscription-endpoint "$FUNCTION_OCID" \
+        --query 'data.id' --raw-output 2>/dev/null || echo "")
+    
+    if [ -n "$SUB_OCID" ] && [ "$SUB_OCID" != "null" ]; then
+        log "Function subscribed successfully: $SUB_OCID"
+    else
+        warn "Failed to subscribe function - check IAM policies for Functions service"
     fi
 }
 
@@ -311,6 +359,7 @@ create_alarm() {
     log "Creating alarm: $ALARM_NAME"
     
     # Check if alarm already exists
+    cmd "oci monitoring alarm list --compartment-id $COMPARTMENT_OCID --display-name $ALARM_NAME --lifecycle-state ACTIVE"
     EXISTING_ALARM=$(oci monitoring alarm list \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$ALARM_NAME" \
@@ -326,6 +375,7 @@ create_alarm() {
     METRIC_QUERY="$METRIC_NAME[${ALARM_EVALUATION_PERIOD}m]{resourceDisplayName =~ \"$DISPLAY_NAME_PREFIX*\"}.mean()"
     
     # Create alarm
+    cmd "oci monitoring alarm create --compartment-id $COMPARTMENT_OCID --display-name $ALARM_NAME --destinations '[\"$NOTIFICATION_TOPIC_OCID\"]' --namespace oci_computecontainerinstance --query-text '$METRIC_QUERY'"
     ALARM_OCID=$(oci monitoring alarm create \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$ALARM_NAME" \
@@ -353,6 +403,7 @@ create_alarm_health_check() {
     log "Creating health check alarm: $ALARM_NAME"
     
     # Check if alarm already exists
+    cmd "oci monitoring alarm list --compartment-id $COMPARTMENT_OCID --display-name $ALARM_NAME --lifecycle-state ACTIVE"
     EXISTING_ALARM=$(oci monitoring alarm list \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$ALARM_NAME" \
@@ -369,6 +420,7 @@ create_alarm_health_check() {
     METRIC_QUERY="UnHealthyBackendCount[${ALARM_EVALUATION_PERIOD}m]{loadBalancerId=\"$LB_OCID\", backendSetName=\"$BACKEND_SET_NAME\"}.mean() / TotalBackendCount[${ALARM_EVALUATION_PERIOD}m]{loadBalancerId=\"$LB_OCID\", backendSetName=\"$BACKEND_SET_NAME\"}.mean() * 100"
     
     # Create alarm
+    cmd "oci monitoring alarm create --compartment-id $COMPARTMENT_OCID --display-name $ALARM_NAME --destinations '[\"$NOTIFICATION_TOPIC_OCID\"]' --namespace oci_lbaas --query-text '$METRIC_QUERY'"
     ALARM_OCID=$(oci monitoring alarm create \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$ALARM_NAME" \
@@ -422,6 +474,12 @@ deploy_autoscaling() {
     
     # Create notification topic
     create_notification_topic
+    echo ""
+    
+    # Subscribe functions to notification topic
+    log "Subscribing functions to notification topic..."
+    subscribe_function_to_topic "$SCALE_UP_FUNCTION_OCID" "scale-up-function"
+    subscribe_function_to_topic "$SCALE_DOWN_FUNCTION_OCID" "scale-down-function"
     echo ""
     
     # Create alarms
@@ -479,6 +537,7 @@ show_status() {
     
     # Functions Application
     info "Functions Application: $FUNCTIONS_APP_NAME"
+    cmd "oci fn application list --compartment-id $COMPARTMENT_OCID --display-name $FUNCTIONS_APP_NAME"
     oci fn application list \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$FUNCTIONS_APP_NAME" \
@@ -496,6 +555,7 @@ show_status() {
     
     if [ -n "$APP_OCID" ] && [ "$APP_OCID" != "null" ]; then
         info "Scale-Up Function:"
+        cmd "oci fn function list --application-id $APP_OCID --display-name $SCALE_UP_FUNCTION_NAME"
         oci fn function list \
             --application-id "$APP_OCID" \
             --display-name "$SCALE_UP_FUNCTION_NAME" \
@@ -504,6 +564,7 @@ show_status() {
         echo ""
         
         info "Scale-Down Function:"
+        cmd "oci fn function list --application-id $APP_OCID --display-name $SCALE_DOWN_FUNCTION_NAME"
         oci fn function list \
             --application-id "$APP_OCID" \
             --display-name "$SCALE_DOWN_FUNCTION_NAME" \
@@ -516,6 +577,7 @@ show_status() {
     
     # Alarms
     info "Alarms:"
+    cmd "oci monitoring alarm list --compartment-id $COMPARTMENT_OCID"
     oci monitoring alarm list \
         --compartment-id "$COMPARTMENT_OCID" \
         --query 'data[?starts_with("display-name", `ci-autoscaling`)].{Name:"display-name", State:"lifecycle-state", Enabled:"is-enabled"}' \
@@ -524,6 +586,7 @@ show_status() {
     
     # Container Instances
     info "Active Container Instances:"
+    cmd "oci container-instances container-instance list --compartment-id $COMPARTMENT_OCID --lifecycle-state ACTIVE"
     oci container-instances container-instance list \
         --compartment-id "$COMPARTMENT_OCID" \
         --lifecycle-state ACTIVE \
@@ -546,6 +609,7 @@ destroy_autoscaling() {
     
     # Delete alarms
     log "Deleting alarms..."
+    cmd "oci monitoring alarm list --compartment-id $COMPARTMENT_OCID"
     ALARM_IDS=$(oci monitoring alarm list \
         --compartment-id "$COMPARTMENT_OCID" \
         --query 'data[?starts_with("display-name", `ci-autoscaling`)].id' \
@@ -555,7 +619,8 @@ destroy_autoscaling() {
         while IFS= read -r ALARM_ID; do
             if [ -n "$ALARM_ID" ] && [ "$ALARM_ID" != "null" ]; then
                 log "Deleting alarm: $ALARM_ID"
-                oci monitoring alarm delete --alarm-id "$ALARM_ID" --force 2>/dev/null || warn "Failed to delete alarm $ALARM_ID"
+                cmd "oci monitoring alarm delete --alarm-id $ALARM_ID --force"
+                oci monitoring alarm delete --alarm-id "$ALARM_ID" --force 2>/dev/null || warn "Failed to delete alarm"
             fi
         done <<< "$ALARM_IDS"
         log "All alarms deleted"
@@ -566,6 +631,7 @@ destroy_autoscaling() {
     
     # Delete functions first, then application
     log "Deleting Functions Application..."
+    cmd "oci fn application list --compartment-id $COMPARTMENT_OCID --display-name $FUNCTIONS_APP_NAME --lifecycle-state ACTIVE"
     APP_ID=$(oci fn application list \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$FUNCTIONS_APP_NAME" \
@@ -574,6 +640,7 @@ destroy_autoscaling() {
     
     if [ -n "$APP_ID" ] && [ "$APP_ID" != "null" ]; then
         # Delete all functions in the application first
+        cmd "oci fn function list --application-id $APP_ID"
         FUNCTION_IDS=$(oci fn function list \
             --application-id "$APP_ID" \
             --query 'data[*].id' \
@@ -583,6 +650,7 @@ destroy_autoscaling() {
             while IFS= read -r FUNCTION_ID; do
                 if [ -n "$FUNCTION_ID" ] && [ "$FUNCTION_ID" != "null" ]; then
                     log "Deleting function: $FUNCTION_ID"
+                    cmd "oci fn function delete --function-id $FUNCTION_ID --force"
                     oci fn function delete --function-id "$FUNCTION_ID" --force 2>/dev/null || warn "Failed to delete function"
                 fi
             done <<< "$FUNCTION_IDS"
@@ -590,6 +658,7 @@ destroy_autoscaling() {
         
         # Now delete the application
         log "Deleting application: $APP_ID"
+        cmd "oci fn application delete --application-id $APP_ID --force"
         oci fn application delete --application-id "$APP_ID" --force 2>/dev/null && log "Functions Application deleted" || warn "Failed to delete application"
     else
         log "No Functions Application found to delete"
@@ -598,6 +667,7 @@ destroy_autoscaling() {
     
     # Delete notification topic
     log "Deleting notification topic..."
+    cmd "oci ons topic list --compartment-id $COMPARTMENT_OCID --name $NOTIFICATION_TOPIC_NAME --lifecycle-state ACTIVE"
     TOPIC_ID=$(oci ons topic list \
         --compartment-id "$COMPARTMENT_OCID" \
         --name "$NOTIFICATION_TOPIC_NAME" \
@@ -606,6 +676,7 @@ destroy_autoscaling() {
     
     if [ -n "$TOPIC_ID" ] && [ "$TOPIC_ID" != "null" ]; then
         log "Deleting topic: $TOPIC_ID"
+        cmd "oci ons topic delete --topic-id $TOPIC_ID --force"
         oci ons topic delete --topic-id "$TOPIC_ID" --force 2>/dev/null && log "Notification topic deleted" || warn "Failed to delete topic"
     else
         log "No notification topic found to delete"
@@ -621,6 +692,7 @@ deploy_alarms_only() {
     echo ""
     
     # Get existing functions
+    cmd "oci fn application list --compartment-id $COMPARTMENT_OCID --display-name $FUNCTIONS_APP_NAME --lifecycle-state ACTIVE"
     FUNCTIONS_APP_OCID=$(oci fn application list \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$FUNCTIONS_APP_NAME" \
@@ -631,12 +703,14 @@ deploy_alarms_only() {
         error "Functions Application not found. Deploy functions first."
     fi
     
+    cmd "oci fn function list --application-id $FUNCTIONS_APP_OCID --display-name $SCALE_UP_FUNCTION_NAME --lifecycle-state ACTIVE"
     SCALE_UP_FUNCTION_OCID=$(oci fn function list \
         --application-id "$FUNCTIONS_APP_OCID" \
         --display-name "$SCALE_UP_FUNCTION_NAME" \
         --lifecycle-state ACTIVE \
         --query 'data[0].id' --raw-output)
     
+    cmd "oci fn function list --application-id $FUNCTIONS_APP_OCID --display-name $SCALE_DOWN_FUNCTION_NAME --lifecycle-state ACTIVE"
     SCALE_DOWN_FUNCTION_OCID=$(oci fn function list \
         --application-id "$FUNCTIONS_APP_OCID" \
         --display-name "$SCALE_DOWN_FUNCTION_NAME" \
