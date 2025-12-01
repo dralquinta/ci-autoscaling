@@ -61,8 +61,10 @@ APP_PORT="${APP_PORT}"
 HEALTH_CHECK_PATH="${HEALTH_CHECK_PATH}"
 MEMORY_GB="${MEMORY_GB}"
 OCPUS="${OCPUS}"
+INSTANCE_WAIT_TIMEOUT="${INSTANCE_WAIT_TIMEOUT:-300}"
 
 # Load Balancer Configuration
+# Load Balancer Configuration (backend set and backend management only - LB creation handled by loadbalancer.sh)
 LB_OCID="${LB_OCID:-}"
 BACKEND_SET_NAME="${BACKEND_SET_NAME}"
 LISTENER_NAME="${LISTENER_NAME}"
@@ -93,7 +95,8 @@ ENVIRONMENT VARIABLES:
         OCPUS                   Container OCPUs (default: 1)
     
     Load Balancer (optional):
-        LB_OCID                 Existing Load Balancer OCID to configure backend
+        LB_OCID                 Existing Load Balancer OCID (required to add backends)
+                                Note: Use loadbalancer.sh to create the load balancer first
 
 EXAMPLES:
     # Basic deployment
@@ -120,7 +123,7 @@ WORKFLOW:
     5. Destroy existing instance if found
     6. Deploy new container instance
     7. Test deployment health
-    8. Configure load balancer backend (if LB_OCID is set)
+    8. Create backend set and add container as backend (if LB_OCID is set)
 
 CONFIGURATION FILE:
     You can source deploy.env to set environment variables:
@@ -138,6 +141,10 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             show_help
             ;;
+        --skip-docker)
+            export SKIP_DOCKER=1
+            shift
+            ;;
         *)
             error "Unknown option: $1. Use --help for usage information."
             ;;
@@ -153,7 +160,11 @@ check_prerequisites() {
     fi
     
     if ! command -v docker &> /dev/null; then
-        error "Docker not found. Please install Docker."
+        if [ "$SKIP_DOCKER" == "1" ]; then
+            warn "Docker not found - continuing because SKIP_DOCKER=1"
+        else
+            error "Docker not found. Please install Docker."
+        fi
     fi
     
     # Check required environment variables
@@ -197,6 +208,12 @@ check_prerequisites() {
 build_docker_image() {
     log "Building Docker image..."
     
+    # Optionally skip Docker build/push (useful for debug)
+    if [ "$SKIP_DOCKER" == "1" ]; then
+        warn "SKIP_DOCKER is set - skipping Docker build"
+        return 0
+    fi
+
     if [ ! -f "./Dockerfile" ]; then
         error "Dockerfile not found in current directory"
     fi
@@ -210,6 +227,10 @@ build_docker_image() {
 # Push Docker image to registry
 push_docker_image() {
     log "Pushing Docker image to registry..."
+    if [ "$SKIP_DOCKER" == "1" ]; then
+        warn "SKIP_DOCKER is set - skipping Docker push"
+        return 0
+    fi
     
     # Tag image for registry
     cmd "docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_URI}"
@@ -341,27 +362,106 @@ deploy_container() {
     fi
     
     # Extract the container instance OCID from the output
-    CONTAINER_INSTANCE_OCID=$(echo "$CREATE_OUTPUT" | grep -o 'ocid1\.computecontainerinstance[^"]*' | head -1)
+    # When --wait-for-state is used, we need to extract from work-request or query by name
+    CONTAINER_INSTANCE_OCID=$(echo "$CREATE_OUTPUT" | grep -o 'ocid1\.computecontainerinstance[^"[:space:]]*' | head -1)
     
     if [ -z "$CONTAINER_INSTANCE_OCID" ]; then
-        error "Failed to extract container instance OCID from output"
+        # If extraction failed, query by display name (wait a bit for state to propagate)
+        log "Extracting OCID from output failed, waiting for instance to be active..."
+        sleep 10
+        
+        cmd "oci container-instances container-instance list --compartment-id $OCI_COMPARTMENT_OCID --display-name $DISPLAY_NAME"
+        CONTAINER_INSTANCE_OCID=$(oci container-instances container-instance list \
+            --compartment-id "$OCI_COMPARTMENT_OCID" \
+            --display-name "$DISPLAY_NAME" \
+            --query 'data.items[0].id' \
+            --raw-output 2>/dev/null || echo "")
+        
+        if [ -z "$CONTAINER_INSTANCE_OCID" ] || [ "$CONTAINER_INSTANCE_OCID" == "null" ]; then
+            # If still not found, try to extract from work-request-id in CREATE_OUTPUT
+            WORK_REQUEST_OCID=$(echo "$CREATE_OUTPUT" | grep -o 'ocid1\.workrequest[^"[:space:]]*' | head -1)
+            if [ -n "$WORK_REQUEST_OCID" ]; then
+                log "Found work request: $WORK_REQUEST_OCID, querying resources for container instance OCID..."
+                set +e
+                CONTAINER_INSTANCE_OCID=$(oci work-requests work-request get --work-request-id "$WORK_REQUEST_OCID" --query "data.resources[?contains(entity-type, 'containerInstance')].identifier | [0]" --raw-output 2>/dev/null || echo "")
+                set -e
+            fi
+
+            if [ -z "$CONTAINER_INSTANCE_OCID" ] || [ "$CONTAINER_INSTANCE_OCID" == "null" ]; then
+                error "Failed to extract or query container instance OCID"
+            fi
+        fi
     fi
     
     log "Created Container Instance: $CONTAINER_INSTANCE_OCID"
+    # Wait until the container instance lifecycle state becomes ACTIVE
+    wait_for_instance_state "$CONTAINER_INSTANCE_OCID" "ACTIVE" "$INSTANCE_WAIT_TIMEOUT"
+    if [ $? -ne 0 ]; then
+        set +e
+        local STATE=$(oci container-instances container-instance get --container-instance-id "$CONTAINER_INSTANCE_OCID" --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo "UNKNOWN")
+        set -e
+        if [ "$STATE" != "ACTIVE" ]; then
+            error "Container instance did not reach ACTIVE state (state: $STATE). Check the OCI Console or run: oci container-instances container-instance get --container-instance-id $CONTAINER_INSTANCE_OCID"
+        fi
+    fi
+}
+
+
+# Wait for a container instance to reach a specific lifecycle state
+wait_for_instance_state() {
+    local instance_ocid="$1"
+    local target_state="$2"
+    local max_wait=${3:-120}
+    local elapsed=0
+    local interval=5
+
+    log "Waiting for instance $instance_ocid to reach state $target_state..."
+    while [ $elapsed -lt $max_wait ]; do
+        set +e
+        local state=$(oci container-instances container-instance get --container-instance-id "$instance_ocid" --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo "")
+        local get_exit=$?
+        set -e
+        if [ $get_exit -ne 0 ]; then
+            warn "Failed to query instance state for $instance_ocid"
+        fi
+        if [ "$state" = "$target_state" ]; then
+            log "Instance $instance_ocid reached state $target_state"
+            return 0
+        fi
+        sleep $interval
+        elapsed=$((elapsed + interval))
+    done
+    warn "Timeout waiting for instance $instance_ocid to reach $target_state (waited ${max_wait}s)"
+    return 1
 }
 
 # Get container instance details
 get_instance_details() {
     log "Retrieving container instance details..."
     
-    # Get VNIC ID first
+    # Get VNIC ID first - wait until VNIC is attached
+    local MAX_WAIT=120
+    local ELAPSED=0
+    local SLEEP_INTERVAL=5
+    local VNIC_ID=""
+
     cmd "oci container-instances container-instance get --container-instance-id $CONTAINER_INSTANCE_OCID"
-    local VNIC_ID=$(oci container-instances container-instance get \
-        --container-instance-id "$CONTAINER_INSTANCE_OCID" \
-        --query 'data.vnics[0]."vnic-id"' --raw-output 2>/dev/null || echo "")
-    
+    while [ $ELAPSED -lt $MAX_WAIT ]; do
+        VNIC_ID=$(oci container-instances container-instance get \
+            --container-instance-id "$CONTAINER_INSTANCE_OCID" \
+            --query 'data.vnics[0]."vnic-id"' --raw-output 2>/dev/null || echo "")
+        if [ -n "$VNIC_ID" ] && [ "$VNIC_ID" != "null" ]; then
+            break
+        fi
+
+        sleep $SLEEP_INTERVAL
+        ELAPSED=$((ELAPSED + SLEEP_INTERVAL))
+        echo -ne "\r${BLUE}[INFO]${NC} Waiting for VNIC to attach (waited ${ELAPSED}s)..."
+    done
+    echo
+
     if [ -z "$VNIC_ID" ] || [ "$VNIC_ID" == "null" ]; then
-        warn "Could not retrieve VNIC ID"
+        warn "Could not retrieve VNIC ID after waiting ${MAX_WAIT}s"
         return 0
     fi
     
@@ -478,9 +578,6 @@ add_backend_to_lb() {
     log "Backend added successfully"
 }
 
-# Create Load Balancer
-
-
 # Get Load Balancer public IP
 get_lb_public_ip() {
     if [ -z "$LB_OCID" ]; then
@@ -591,11 +688,8 @@ main() {
     # Deploy new container instance with latest image
     deploy_container
     
-    # Wait for networking to be ready
-    log "Waiting for networking to be ready..."
-    sleep 30
-    
     # Get new container details (sets CONTAINER_PRIVATE_IP)
+    log "Gathering instance details and waiting for VNIC attachment..."
     get_instance_details
     echo ""
     

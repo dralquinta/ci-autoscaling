@@ -128,7 +128,7 @@ check_prerequisites() {
 
 # Create Load Balancer
 create_load_balancer() {
-    log "Creating Load Balancer..."
+    log "Checking for existing Load Balancer..."
     
     # Check if load balancer already exists
     cmd "oci lb load-balancer list --compartment-id $OCI_COMPARTMENT_OCID --display-name $LB_DISPLAY_NAME --lifecycle-state ACTIVE"
@@ -140,13 +140,41 @@ create_load_balancer() {
         --raw-output 2>/dev/null || echo "")
     
     if [ -n "$EXISTING_LB" ] && [ "$EXISTING_LB" != "null" ]; then
-        warn "Load Balancer already exists: $EXISTING_LB"
+        log "✅ Load Balancer already exists: $EXISTING_LB"
         LB_OCID="$EXISTING_LB"
+        
+        # Check if backend set exists
+        log "Checking backend set configuration..."
+        local BACKEND_SET_EXISTS=$(oci lb load-balancer get \
+            --load-balancer-id "$LB_OCID" \
+            --query "data.\"backend-sets\".\"$BACKEND_SET_NAME\"" 2>/dev/null || echo "")
+        
+        if [ -z "$BACKEND_SET_EXISTS" ] || [ "$BACKEND_SET_EXISTS" == "null" ]; then
+            warn "Backend set '$BACKEND_SET_NAME' does not exist, creating it..."
+            create_backend_set
+        else
+            log "Backend set '$BACKEND_SET_NAME' already exists"
+        fi
+        
+        # Check if listener exists
+        log "Checking listener configuration..."
+        local LISTENER_EXISTS=$(oci lb load-balancer get \
+            --load-balancer-id "$LB_OCID" \
+            --query "data.listeners.\"$LISTENER_NAME\"" 2>/dev/null || echo "")
+        
+        if [ -z "$LISTENER_EXISTS" ] || [ "$LISTENER_EXISTS" == "null" ]; then
+            warn "Listener '$LISTENER_NAME' does not exist, creating it..."
+            create_listener
+        else
+            log "Listener '$LISTENER_NAME' already exists"
+        fi
+        
         display_lb_info
         return 0
     fi
     
-    info "Creating new Load Balancer with shape: $LB_SHAPE"
+    log "Creating new Load Balancer..."
+    info "Shape: $LB_SHAPE"
     info "Bandwidth: ${LB_MIN_BANDWIDTH_MBPS}-${LB_MAX_BANDWIDTH_MBPS} Mbps"
     info "Type: Public"
     
