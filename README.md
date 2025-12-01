@@ -16,6 +16,9 @@ A simple Spring Boot application designed to test autoscaling features in Docker
 - Java 17 or higher
 - Maven 3.6+
 - Docker and Docker Compose
+- Fn CLI
+- OCI CLI
+- IAM Policies for DynGroup on Functions
 
 ## Project Structure
 
