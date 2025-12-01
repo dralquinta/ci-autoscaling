@@ -127,6 +127,41 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Configure fn CLI for OCI
+configure_fn_context() {
+    log "Configuring fn CLI context for OCI..."
+    
+    # Check if oci-context already exists
+    if fn list contexts 2>/dev/null | grep -q "oci-context"; then
+        log "OCI context already exists, updating configuration"
+        fn use context oci-context 2>/dev/null || true
+    else
+        log "Creating OCI context for fn CLI"
+        fn create context oci-context --provider oracle
+        fn use context oci-context
+    fi
+    
+    # Get namespace for container registry
+    local NAMESPACE=$(oci os ns get --query 'data' --raw-output)
+    
+    # Set API URL for Functions service
+    fn update context api-url "https://functions.${OCI_REGION}.oraclecloud.com"
+    
+    # Set registry (using Docker Hub or OCIR)
+    if [[ "$IMAGE_URI" =~ ^docker\.io ]]; then
+        log "Using Docker Hub registry"
+        fn update context registry docker.io/$(echo $IMAGE_URI | cut -d'/' -f2)
+    else
+        log "Using OCI Registry (OCIR)"
+        fn update context registry ${OCI_REGION}.ocir.io/${NAMESPACE}
+    fi
+    
+    # Set OCI configuration
+    fn update context oracle.compartment-id "$COMPARTMENT_OCID"
+    
+    log "fn CLI configured successfully"
+}
+
 # Check prerequisites
 check_prerequisites() {
     log "Checking prerequisites..."
@@ -142,6 +177,9 @@ check_prerequisites() {
     if ! command -v docker &> /dev/null; then
         error "Docker not found. Please install Docker."
     fi
+    
+    # Configure fn CLI context
+    configure_fn_context
     
     log "Prerequisites check passed"
 }

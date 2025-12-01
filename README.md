@@ -19,6 +19,7 @@ A simple Spring Boot application designed to test autoscaling features in Docker
 - Fn CLI
 - OCI CLI
 - IAM Policies for DynGroup on Functions
+- OCIR Token
 
 ## Project Structure
 

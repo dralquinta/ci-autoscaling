@@ -37,7 +37,7 @@ fi
 
 # Get tenancy OCID and home region
 TENANCY_OCID=$(oci iam compartment list --query "data[0].\"compartment-id\"" --raw-output)
-HOME_REGION="us-ashburn-1"
+HOME_REGION=$(oci iam region-subscription list --query "data[?\"is-home-region\"==\`true\`].\"region-name\" | [0]" --raw-output)
 log "Tenancy OCID: $TENANCY_OCID"
 log "Home Region: $HOME_REGION"
 
@@ -56,7 +56,7 @@ create_dynamic_group() {
     log "Creating dynamic group: $DYNAMIC_GROUP_NAME"
     
     # Check if dynamic group already exists
-    cmd "oci iam dynamic-group list --compartment-id $TENANCY_OCID --name $DYNAMIC_GROUP_NAME --region $HOME_REGION"
+    log "Checking for existing dynamic group..."
     EXISTING_DG=$(oci iam dynamic-group list \
         --compartment-id "$TENANCY_OCID" \
         --name "$DYNAMIC_GROUP_NAME" \
@@ -71,7 +71,7 @@ create_dynamic_group() {
     fi
     
     # Get Functions Application OCID
-    cmd "oci fn application list --compartment-id $COMPARTMENT_OCID --display-name $FUNCTIONS_APP_NAME"
+    log "Getting Functions Application OCID..."
     FUNCTIONS_APP_OCID=$(oci fn application list \
         --compartment-id "$COMPARTMENT_OCID" \
         --display-name "$FUNCTIONS_APP_NAME" \
@@ -85,11 +85,19 @@ create_dynamic_group() {
     
     log "Functions Application OCID: $FUNCTIONS_APP_OCID"
     
+    # Get compartment name for policy statements
+    COMPARTMENT_NAME=$(oci iam compartment get --compartment-id "$COMPARTMENT_OCID" --query 'data.name' --raw-output 2>/dev/null || echo "")
+    if [ -z "$COMPARTMENT_NAME" ]; then
+        error "Failed to get compartment name"
+        exit 1
+    fi
+    log "Compartment name: $COMPARTMENT_NAME"
+    
     # Create matching rule for all functions in the application
     MATCHING_RULE="ALL {resource.type = 'fnfunc', resource.compartment.id = '$COMPARTMENT_OCID'}"
     
     # Create dynamic group
-    cmd "oci iam dynamic-group create --compartment-id $TENANCY_OCID --name $DYNAMIC_GROUP_NAME --description \"$DYNAMIC_GROUP_DESC\" --matching-rule \"$MATCHING_RULE\" --region $HOME_REGION"
+    log "Creating dynamic group with matching rule: $MATCHING_RULE"
     DYNAMIC_GROUP_OCID=$(oci iam dynamic-group create \
         --compartment-id "$TENANCY_OCID" \
         --name "$DYNAMIC_GROUP_NAME" \
@@ -114,7 +122,7 @@ create_policy() {
     log "Creating policy: $POLICY_NAME"
     
     # Check if policy already exists
-    cmd "oci iam policy list --compartment-id $TENANCY_OCID --name $POLICY_NAME --region $HOME_REGION"
+    log "Checking for existing policy..."
     EXISTING_POLICY=$(oci iam policy list \
         --compartment-id "$TENANCY_OCID" \
         --name "$POLICY_NAME" \
@@ -126,16 +134,13 @@ create_policy() {
         warn "Policy already exists: $EXISTING_POLICY"
         log "Updating policy statements..."
         
-        # Update policy with new statements
-        POLICY_STATEMENTS='[
-            "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to manage container-instances in compartment id '${COMPARTMENT_OCID}'",
-            "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to manage container-families in compartment id '${COMPARTMENT_OCID}'",
-            "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to manage load-balancers in compartment id '${COMPARTMENT_OCID}'",
-            "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to use virtual-network-family in compartment id '${COMPARTMENT_OCID}'",
-            "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to read all-resources in compartment id '${COMPARTMENT_OCID}'"
-        ]'
+        # Get compartment name for policy statements
+        COMPARTMENT_NAME=$(oci iam compartment get --compartment-id "$COMPARTMENT_OCID" --query 'data.name' --raw-output 2>/dev/null || echo "")
         
-        cmd "oci iam policy update --policy-id $EXISTING_POLICY --statements '$POLICY_STATEMENTS' --force --region $HOME_REGION"
+        # Update policy with new statements (using all-resources in tenancy for simplicity)
+        POLICY_STATEMENTS="[\"Allow dynamic-group ${DYNAMIC_GROUP_NAME} to manage all-resources in tenancy\"]"
+        
+        log "Updating policy statements..."
         oci iam policy update \
             --policy-id "$EXISTING_POLICY" \
             --statements "$POLICY_STATEMENTS" \
@@ -146,30 +151,45 @@ create_policy() {
         return 0
     fi
     
-    # Create policy statements
-    POLICY_STATEMENTS='[
-        "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to manage container-instances in compartment id '${COMPARTMENT_OCID}'",
-        "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to manage container-families in compartment id '${COMPARTMENT_OCID}'",
-        "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to manage load-balancers in compartment id '${COMPARTMENT_OCID}'",
-        "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to use virtual-network-family in compartment id '${COMPARTMENT_OCID}'",
-        "Allow dynamic-group '${DYNAMIC_GROUP_NAME}' to read all-resources in compartment id '${COMPARTMENT_OCID}'"
-    ]'
+    # Create policy statements (using all-resources in tenancy for simplicity)
+    POLICY_STATEMENTS="[\"Allow dynamic-group ${DYNAMIC_GROUP_NAME} to manage all-resources in tenancy\"]"
     
     # Create policy
-    cmd "oci iam policy create --compartment-id $TENANCY_OCID --name $POLICY_NAME --description \"$POLICY_DESC\" --statements '$POLICY_STATEMENTS' --region $HOME_REGION"
-    POLICY_OCID=$(oci iam policy create \
+    log "Creating new policy..."
+    POLICY_OUTPUT=$(oci iam policy create \
         --compartment-id "$TENANCY_OCID" \
         --name "$POLICY_NAME" \
         --description "$POLICY_DESC" \
         --statements "$POLICY_STATEMENTS" \
-        --region "$HOME_REGION" \
-        --query 'data.id' \
-        --raw-output 2>/dev/null || echo "")
+        --region "$HOME_REGION" 2>&1)
+    
+    if echo "$POLICY_OUTPUT" | grep -q "No permissions found\|Failed to parse policy"; then
+        error "Failed to create policy - OCI API validation error"
+        error ""
+        error "Please create the following policy manually in the OCI Console:"
+        error "Navigate to: Identity & Security > Policies > Create Policy"
+        error ""
+        error "Compartment: Root (tenancy)"
+        error "Name: $POLICY_NAME"
+        error "Description: $POLICY_DESC"
+        error ""
+        error "Policy Statements (use Policy Builder or manual editor):"
+        echo "$POLICY_STATEMENTS" | grep -o '"[^"]*"' | sed 's/"//g' | while read line; do
+            error "  $line"
+        done
+        error ""
+        warn "Note: The OCI CLI is rejecting these statements. You may need to adjust"
+        warn "the resource types or use the OCI Console Policy Builder to create them."
+        exit 1
+    fi
+    
+    POLICY_OCID=$(echo "$POLICY_OUTPUT" | grep -o '"id": "[^"]*"' | head -1 | cut -d'"' -f4)
     
     if [ -n "$POLICY_OCID" ] && [ "$POLICY_OCID" != "null" ]; then
         log "Policy created successfully: $POLICY_OCID"
     else
         error "Failed to create policy"
+        error "Output: $POLICY_OUTPUT"
         exit 1
     fi
 }
