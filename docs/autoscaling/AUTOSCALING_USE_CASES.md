@@ -1,6 +1,6 @@
 # Autoscaling Use Cases
 
-This document describes three autoscaling scenarios designed to test different autoscaling triggers.
+This document describes four autoscaling scenarios designed to test different autoscaling triggers.
 
 ## Use Case 1: CPU-Based Autoscaling (>60% CPU Utilization)
 
@@ -217,7 +217,109 @@ curl -X POST "http://localhost:8080/api/scenario/health/recover"
 
 ---
 
-## Kubernetes Deployment with All Three HPA Scenarios
+## Use Case 4: Load Balancer Health Check Failure-Based Autoscaling
+
+### Scenario Description
+This scenario monitors the OCI Load Balancer backend health and triggers autoscaling when:
+- Backends return HTTP status codes other than 200
+- Backend response times exceed 5 seconds (timeout)
+- Health check probe failures occur
+
+### How It Works
+
+1. **OCI Load Balancer monitors backend health:**
+   - Sends periodic health checks to each backend
+   - Tracks `UnHealthyBackendCount` metric
+   - Monitors response codes and timeouts
+
+2. **Alarm triggers when unhealthy percentage exceeds threshold:**
+   - Formula: `(UnHealthyBackendCount / TotalBackendCount) * 100 > 50%`
+   - Evaluates over 5-minute period
+   - Fires when ≥50% of backends are unhealthy
+
+3. **Scale-up function creates new healthy instance:**
+   - New container instance provisioned
+   - Added to load balancer backend set
+   - Distributes traffic away from unhealthy backends
+
+### Testing Steps
+
+1. **Trigger health check failures on existing instances:**
+```bash
+# Get the LB public IP
+LB_IP=$(oci lb load-balancer get --load-balancer-id $LB_OCID --query 'data."ip-addresses"[0]."ip-address"' --raw-output)
+
+# Fail health checks on all running instances
+curl -X POST "http://${LB_IP}:8080/api/scenario/health/fail?durationSeconds=600"
+```
+
+2. **Monitor backend health:**
+```bash
+# Check backend set status
+oci lb backend-set get \
+  --load-balancer-id $LB_OCID \
+  --backend-set-name autoscaling-demo-backend-set \
+  --query 'data.backends[*].{Name:name, Status:status, Health:"health-status"}'
+```
+
+3. **Expected behavior:**
+   - Backends marked as `CRITICAL` or `WARNING`
+   - `UnHealthyBackendCount` metric increases
+   - After 5 minutes, alarm fires
+   - Scale-up function creates new healthy instance
+   - New instance added to backend set
+   - Traffic shifts to healthy backends
+
+4. **Monitor alarm state:**
+```bash
+oci monitoring alarm-status get \
+  --alarm-id $(oci monitoring alarm list \
+    --compartment-id $COMPARTMENT_OCID \
+    --display-name "ci-autoscaling-health-critical" \
+    --query 'data[0].id' --raw-output)
+```
+
+5. **Check scale-up function logs:**
+```bash
+fn logs get app ci-autoscaling-app fn scale-up
+```
+
+6. **Recover health checks:**
+```bash
+curl -X POST "http://${LB_IP}:8080/api/scenario/health/recover"
+```
+
+### Configuration
+
+The health check alarm is configured in `autoscaling.env`:
+
+```bash
+export HEALTH_FAILURE_THRESHOLD="50"    # Percentage of backends unhealthy to trigger scale-up
+```
+
+### Metrics Monitored
+
+The alarm uses OCI Load Balancer metrics:
+- **Namespace:** `oci_lbaas`
+- **Metrics:**
+  - `UnHealthyBackendCount` - Number of backends failing health checks
+  - `TotalBackendCount` - Total number of backends in set
+- **Evaluation:** `(UnHealthyBackendCount / TotalBackendCount) * 100`
+
+### Health Check Configuration
+
+The backend set health checker is configured in `deploy.sh`:
+- **Protocol:** HTTP
+- **Port:** 8080
+- **URL Path:** `/actuator/health`
+- **Interval:** 10 seconds
+- **Timeout:** 5 seconds (responses > 5s considered failed)
+- **Retries:** 3
+- **Success Codes:** 200
+
+---
+
+## OCI Container Instances Deployment with All Four Autoscaling Scenarios
 
 ### Complete Deployment Manifest
 

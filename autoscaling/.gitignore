@@ -1,0 +1,28 @@
+# Ignore function build artifacts
+scale-up-function/.fn/
+scale-down-function/.fn/
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Ignore environment files with secrets
+*.env.local
+*.env.secret
+
+# Ignore function deployment logs
+fn.log
+func.log
+
+# Ignore IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Ignore OS files
+.DS_Store
+Thumbs.db

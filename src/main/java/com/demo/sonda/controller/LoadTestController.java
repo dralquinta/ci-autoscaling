@@ -148,6 +148,7 @@ public class LoadTestController {
         Map<String, Object> info = new HashMap<>();
         info.put("application", "Autoscaling Demo");
         info.put("version", "1.0.0");
+        info.put("container_name", System.getenv().getOrDefault("HOSTNAME", "unknown"));
         info.put("processors", runtime.availableProcessors());
         info.put("total_memory_mb", runtime.totalMemory() / (1024 * 1024));
         info.put("free_memory_mb", runtime.freeMemory() / (1024 * 1024));
