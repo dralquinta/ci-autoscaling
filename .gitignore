@@ -37,3 +37,4 @@ build/
 deploy.env
 autoscaling.env
 deploy.log
+app.env
