@@ -2,6 +2,17 @@
 
 ## 🚀 Quick Start (5 minutes)
 
+
+The following policies should be applied before doing autoscaling. 
+
+´´´shell
+Allow dynamic-group <YOUR_DYNAMIC_GROUP> to manage container-instances in compartment id <COMPARTMENT_OCID>
+Allow dynamic-group <YOUR_DYNAMIC_GROUP> to manage container-families in compartment id <COMPARTMENT_OCID>
+Allow dynamic-group <YOUR_DYNAMIC_GROUP> to manage load-balancers in compartment id <COMPARTMENT_OCID>
+Allow dynamic-group <YOUR_DYNAMIC_GROUP> to use virtual-network-family in compartment id <COMPARTMENT_OCID>
+Allow dynamic-group <YOUR_DYNAMIC_GROUP> to read all-resources in compartment id <COMPARTMENT_OCID>
+´´´
+
 ### 1. Install Prerequisites
 
 ```bash
