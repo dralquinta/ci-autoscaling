@@ -101,20 +101,24 @@ SCENARIO_DURATION=900  # 15 minutes per scenario to allow scaling events
 MONITOR_INTERVAL=20    # Check status every 20 seconds
 
 # Helper functions
+timestamp() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo -e "${BLUE}[$(timestamp)] [INFO]${NC} $1"
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    echo -e "${GREEN}[$(timestamp)] [SUCCESS]${NC} $1"
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+    echo -e "${YELLOW}[$(timestamp)] [WARNING]${NC} $1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[$(timestamp)] [ERROR]${NC} $1"
 }
 
 print_header() {

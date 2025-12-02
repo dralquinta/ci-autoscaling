@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # setup-autoscaling.sh - Deploy OCI Functions, Alarms, Events, and Notifications for CI Autoscaling
-# Usage: ./setup-autoscaling.sh [--deploy|--destroy|--status]
+# Usage: ./setup-autoscaling.sh [--deploy|--undeploy|--status]
 
 set -e
 
@@ -53,7 +53,7 @@ Deploy and manage OCI Container Instances autoscaling infrastructure.
 OPTIONS:
     --deploy            Deploy all autoscaling components (default)
     --deploy-alarms-only Deploy only alarms (assumes functions already deployed)
-    --destroy           Remove all autoscaling components
+    --undeploy          Remove all autoscaling components
     --status            Show status of autoscaling components
     --help              Display this help message
 
@@ -91,7 +91,7 @@ EXAMPLES:
     ./setup-autoscaling.sh --status
     
     # Remove all components
-    ./setup-autoscaling.sh --destroy
+    ./setup-autoscaling.sh --undeploy
 
 For more information, see README.md
 EOF
@@ -110,7 +110,7 @@ while [[ $# -gt 0 ]]; do
             ACTION="deploy-alarms-only"
             shift
             ;;
-        --destroy)
+        --undeploy)
             ACTION="destroy"
             shift
             ;;
@@ -420,12 +420,13 @@ create_alarm() {
     # OCI Monitoring uses the query format: metric[period]{dimensions}.aggregation() operator threshold
     # Use max() for GREATER_THAN (scale-up) to trigger when ANY instance is high
     # Use mean() for LESS_THAN (scale-down) to ensure all instances are low before scaling down
+    # Match both "autoscaling-demo" (primary instance) and "autoscaling-demo-instance*" (scaled instances)
     case "$OPERATOR" in
         "GREATER_THAN")
-            METRIC_QUERY="$METRIC_NAME[${ALARM_EVALUATION_PERIOD}m]{resourceDisplayName =~ \"$DISPLAY_NAME_PREFIX*\"}.max() > $THRESHOLD"
+            METRIC_QUERY="$METRIC_NAME[${ALARM_EVALUATION_PERIOD}m]{resourceDisplayName =~ \"autoscaling-demo*\"}.max() > $THRESHOLD"
             ;;
         "LESS_THAN")
-            METRIC_QUERY="$METRIC_NAME[${ALARM_EVALUATION_PERIOD}m]{resourceDisplayName =~ \"$DISPLAY_NAME_PREFIX*\"}.mean() < $THRESHOLD"
+            METRIC_QUERY="$METRIC_NAME[${ALARM_EVALUATION_PERIOD}m]{resourceDisplayName =~ \"autoscaling-demo*\"}.mean() < $THRESHOLD"
             ;;
         *)
             error "Unknown operator: $OPERATOR"

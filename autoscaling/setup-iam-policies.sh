@@ -357,7 +357,7 @@ cleanup() {
 
 case "${1:-}" in
     --deploy)
-        log "====== Setting up IAM resources for autoscaling ======
+        log "====== Setting up IAM resources for autoscaling ======"
         create_dynamic_group
         echo ""
         create_policy
