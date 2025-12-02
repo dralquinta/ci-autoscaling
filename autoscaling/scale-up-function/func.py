@@ -51,15 +51,40 @@ def handler(ctx, data: io.BytesIO = None):
         lb_client = oci.load_balancer.LoadBalancerClient(config={}, signer=signer)
         network_client = oci.core.VirtualNetworkClient(config={}, signer=signer)
         
-        # Check current number of active instances
+        # Check current number of active instances (including CREATING state)
         current_count = count_active_instances(container_client, config)
-        logger.info(f"Current active instances: {current_count}")
+        creating_count = count_creating_instances(container_client, config)
+        total_count = current_count + creating_count
         
-        if current_count >= config['max_instances']:
+        logger.info(f"Current instances - Active: {current_count}, Creating: {creating_count}, Total: {total_count}")
+        
+        # Check if we're already at or above max
+        if total_count >= config['max_instances']:
             logger.warning(f"Already at maximum instances ({config['max_instances']}). No scale-up needed.")
             return {
                 "status": "skipped",
                 "message": f"Already at maximum instances ({config['max_instances']})",
+                "active_count": current_count,
+                "creating_count": creating_count,
+                "total_count": total_count
+            }
+        
+        # Check if there's already a scale-up in progress
+        if creating_count > 0:
+            logger.warning(f"Scale-up already in progress ({creating_count} instances being created). Skipping.")
+            return {
+                "status": "skipped",
+                "message": f"Scale-up already in progress ({creating_count} instances being created)",
+                "active_count": current_count,
+                "creating_count": creating_count
+            }
+        
+        # Check cooldown period (prevent scaling within 2 minutes of last scale operation)
+        if not check_cooldown(container_client, config):
+            logger.warning("Cooldown period active. Skipping scale-up.")
+            return {
+                "status": "skipped",
+                "message": "Cooldown period active (2 minutes since last scale operation)",
                 "current_count": current_count
             }
         
@@ -112,7 +137,7 @@ def get_config():
         "compartment_id": os.environ.get("COMPARTMENT_OCID"),
         "subnet_id": os.environ.get("SUBNET_OCID"),
         "availability_domain": os.environ.get("AD_NAME"),
-        "image_uri": os.environ.get("IMAGE_URI", "docker.io/dralquinta/ci-autoscaling:latest"),
+        "image_uri": os.environ.get("CONTAINER_IMAGE_URI") or os.environ.get("IMAGE_URI", "docker.io/dralquinta/ci-autoscaling:latest"),
         "container_name": os.environ.get("CONTAINER_NAME", "autoscaling-demo"),
         "display_name_prefix": os.environ.get("DISPLAY_NAME_PREFIX", "autoscaling-demo-instance"),
         "memory_gb": int(os.environ.get("MEMORY_GB", "8")),
@@ -122,7 +147,11 @@ def get_config():
         "app_port": int(os.environ.get("APP_PORT", "8080")),
         "health_check_path": os.environ.get("HEALTH_CHECK_PATH", "/actuator/health"),
         "max_instances": int(os.environ.get("MAX_INSTANCES", "5")),
-        "min_instances": int(os.environ.get("MIN_INSTANCES", "1"))
+        "min_instances": int(os.environ.get("MIN_INSTANCES", "1")),
+        "cooldown_seconds": int(os.environ.get("COOLDOWN_SECONDS", "120")),  # Default 2 minutes
+        "ocir_username": os.environ.get("OCIR_USERNAME"),
+        "ocir_auth_token": os.environ.get("OCIR_AUTH_TOKEN"),
+        "ocir_registry": os.environ.get("OCIR_REGISTRY", "sa-santiago-1.ocir.io")
     }
 
 
@@ -147,10 +176,92 @@ def count_active_instances(container_client, config):
         return 0
 
 
+def count_creating_instances(container_client, config):
+    """Count container instances currently being created."""
+    try:
+        response = container_client.list_container_instances(
+            compartment_id=config["compartment_id"],
+            lifecycle_state="CREATING"
+        )
+        
+        # Filter by display name prefix
+        prefix = config["display_name_prefix"]
+        matching_instances = [
+            inst for inst in response.data.items 
+            if inst.display_name.startswith(prefix)
+        ]
+        
+        return len(matching_instances)
+    except Exception as e:
+        logger.error(f"Failed to count creating instances: {e}")
+        return 0
+
+
+def check_cooldown(container_client, config):
+    """
+    Check if cooldown period has elapsed since last scale operation.
+    Returns True if scaling is allowed, False if in cooldown.
+    """
+    try:
+        import datetime
+        
+        cooldown_seconds = int(config.get("cooldown_seconds", 120))  # Default 2 minutes
+        
+        # List all instances (any state)
+        response = container_client.list_container_instances(
+            compartment_id=config["compartment_id"]
+        )
+        
+        # Filter by display name prefix
+        prefix = config["display_name_prefix"]
+        matching_instances = [
+            inst for inst in response.data.items 
+            if inst.display_name.startswith(prefix)
+        ]
+        
+        if not matching_instances:
+            logger.info("No existing instances found. Cooldown check passed.")
+            return True
+        
+        # Find most recent instance creation time
+        most_recent = max(matching_instances, key=lambda x: x.time_created)
+        time_since_creation = datetime.datetime.now(datetime.timezone.utc) - most_recent.time_created
+        seconds_elapsed = time_since_creation.total_seconds()
+        
+        logger.info(f"Most recent instance created {seconds_elapsed:.0f} seconds ago")
+        
+        if seconds_elapsed < cooldown_seconds:
+            remaining = cooldown_seconds - seconds_elapsed
+            logger.warning(f"Cooldown active: {remaining:.0f} seconds remaining")
+            return False
+        
+        logger.info("Cooldown period elapsed. Ready to scale.")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error checking cooldown: {e}")
+        # On error, allow scaling (fail open)
+        return True
+
+
 def create_container_instance(container_client, config):
     """Create a new container instance."""
     timestamp = int(time.time())
     display_name = f"{config['display_name_prefix']}-{timestamp}"
+    
+    # Prepare image pull secrets if OCIR credentials are provided
+    image_pull_secrets = None
+    if config.get("ocir_username") and config.get("ocir_auth_token"):
+        secret_name = f"ocir-secret-{timestamp}"
+        image_pull_secrets = [
+            oci.container_instances.models.BasicImagePullSecret(
+                secret_type="BASIC",
+                registry_endpoint=config["ocir_registry"],
+                username=config["ocir_username"],
+                password=config["ocir_auth_token"]
+            )
+        ]
+        logger.info(f"Configured OCIR image pull secret for registry {config['ocir_registry']}")
     
     # Build container instance details
     create_details = oci.container_instances.models.CreateContainerInstanceDetails(
@@ -162,10 +273,11 @@ def create_container_instance(container_client, config):
             ocpus=float(config["ocpus"])
         ),
         display_name=display_name,
+        image_pull_secrets=image_pull_secrets,
         vnics=[
             oci.container_instances.models.CreateContainerVnicDetails(
                 subnet_id=config["subnet_id"],
-                is_public_ip_assigned=False,
+                is_public_ip_assigned=True,
                 display_name=f"{display_name}-vnic",
                 hostname_label=f"ci-{timestamp}"
             )

@@ -12,6 +12,62 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Default test flags
+RUN_CPU_TEST=false
+RUN_MEMORY_TEST=false
+RUN_LATENCY_TEST=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --high-cpu)
+            RUN_CPU_TEST=true
+            shift
+            ;;
+        --high-memory)
+            RUN_MEMORY_TEST=true
+            shift
+            ;;
+        --high-latency)
+            RUN_LATENCY_TEST=true
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [OPTIONS] [APP_URL]"
+            echo ""
+            echo "Options:"
+            echo "  --high-cpu        Run CPU-based autoscaling test"
+            echo "  --high-memory     Run Memory-based autoscaling test"
+            echo "  --high-latency    Run Health check/latency-based autoscaling test"
+            echo "  -h, --help        Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0 --high-cpu                    # Run only CPU test"
+            echo "  $0 --high-cpu --high-memory      # Run CPU and Memory tests"
+            echo "  $0 --high-cpu http://10.0.0.5    # Run CPU test on specific URL"
+            echo ""
+            echo "If no flags are provided, all tests will run."
+            exit 0
+            ;;
+        http://*|https://*)
+            APP_URL="$1"
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# If no test flags specified, run all tests
+if [ "$RUN_CPU_TEST" = false ] && [ "$RUN_MEMORY_TEST" = false ] && [ "$RUN_LATENCY_TEST" = false ]; then
+    RUN_CPU_TEST=true
+    RUN_MEMORY_TEST=true
+    RUN_LATENCY_TEST=true
+fi
+
 # Get Load Balancer public IP from app.env if available
 if [ -f "app.env" ]; then
     source app.env
@@ -40,9 +96,9 @@ else
 fi
 
 # Configuration
-APP_URL="${1:-$DEFAULT_URL}"
-SCENARIO_DURATION=600  # 10 minutes per scenario to allow scaling events
-MONITOR_INTERVAL=30    # Check status every 30 seconds
+APP_URL="${APP_URL:-$DEFAULT_URL}"
+SCENARIO_DURATION=900  # 15 minutes per scenario to allow scaling events
+MONITOR_INTERVAL=20    # Check status every 20 seconds
 
 # Helper functions
 log_info() {
@@ -116,6 +172,7 @@ generate_load() {
 print_header "Autoscaling Test Suite"
 log_info "Application URL: $APP_URL"
 log_info "Scenario Duration: ${SCENARIO_DURATION}s"
+log_info "Tests to run: $([ "$RUN_CPU_TEST" = true ] && echo -n "CPU ")$([ "$RUN_MEMORY_TEST" = true ] && echo -n "MEMORY ")$([ "$RUN_LATENCY_TEST" = true ] && echo -n "LATENCY ")"
 echo ""
 
 # Verify application is running
@@ -179,127 +236,139 @@ echo ""
 # =============================================================================
 # TEST 1: CPU-Based Autoscaling
 # =============================================================================
-print_header "TEST 1: CPU-Based Autoscaling (Target: >60%)"
+if [ "$RUN_CPU_TEST" = true ]; then
+    print_header "TEST 1: CPU-Based Autoscaling (Target: >60%)"
 
-log_info "Starting CPU load scenario at 90% for ${SCENARIO_DURATION}s..."
-response=$(curl -sf -X POST "$APP_URL/api/scenario/cpu/start?targetCpuPercent=90&durationSeconds=$SCENARIO_DURATION")
-echo "$response" | jq . 2>/dev/null || echo "$response"
+    log_info "Starting IMMEDIATE CPU spike to 100% for ${SCENARIO_DURATION}s..."
+    response=$(curl -sf -X POST "$APP_URL/api/scenario/cpu/start?targetCpuPercent=100&durationSeconds=$SCENARIO_DURATION")
+    echo "$response" | jq . 2>/dev/null || echo "$response"
 
-if [[ $response == *"started"* ]] || [[ $response == *"already running"* ]]; then
-    log_success "CPU load scenario initiated"
-    
-    # Generate additional load with direct API calls
-    log_info "Adding parallel load generation (10 concurrent workers)..."
-    generate_load "/api/cpu?iterations=5000" 10 $((SCENARIO_DURATION / 2))
-    
-    log_info "Monitoring for 5 minutes. Watch for scaling events..."
-    log_warning "Alarms take ~5 minutes to trigger. New instances take ~2-3 minutes to deploy."
-    for i in {1..10}; do
-        sleep $MONITOR_INTERVAL
-        instance_count=$(count_container_instances)
-        log_info "Status check $i/10 ($(($i * $MONITOR_INTERVAL))s elapsed) - Instances: $instance_count"
-        get_scenario_status | jq '{cpu_active: .cpu_scenario_active, cpu_cores: .current_cpu_cores, memory_percent: .current_memory_percent}' 2>/dev/null || get_scenario_status
-    done
-    
-    # Stop background load generation
-    pkill -P $$ curl 2>/dev/null || true
-    
-    log_info "Stopping CPU load scenario..."
-    curl -sf -X POST "$APP_URL/api/scenario/cpu/stop" | jq . 2>/dev/null || echo "Stopped"
-    log_success "CPU scenario completed"
-else
-    log_error "Failed to start CPU scenario"
+    if [[ $response == *"started"* ]] || [[ $response == *"already running"* ]]; then
+        log_success "CPU load scenario initiated - spiking to 100%"
+        
+        log_info "Waiting 10 seconds for CPU to reach 100%..."
+        sleep 10
+        
+        # Generate additional MAXIMUM load with direct API calls
+        log_info "Adding MAXIMUM parallel load generation (30 concurrent workers)..."
+        generate_load "/api/cpu?iterations=20000" 30 $((SCENARIO_DURATION / 2))
+        
+        log_info "Monitoring for 10 minutes. Watch for scaling events..."
+        log_warning "Alarms take ~1-2 minutes to trigger. New instances take ~2-3 minutes to deploy."
+        for i in {1..30}; do
+            sleep $MONITOR_INTERVAL
+            instance_count=$(count_container_instances)
+            log_info "Status check $i/30 ($(($i * $MONITOR_INTERVAL))s elapsed) - Instances: $instance_count"
+            get_scenario_status | jq '{cpu_active: .cpu_scenario_active, cpu_cores: .current_cpu_cores, memory_percent: .current_memory_percent}' 2>/dev/null || get_scenario_status
+        done
+        
+        # Stop background load generation
+        pkill -P $$ curl 2>/dev/null || true
+        
+        log_info "Stopping CPU load scenario..."
+        curl -sf -X POST "$APP_URL/api/scenario/cpu/stop" | jq . 2>/dev/null || echo "Stopped"
+        log_success "CPU scenario completed"
+    else
+        log_error "Failed to start CPU scenario"
+    fi
+
+    log_info "Waiting 2 minutes for scale-down stabilization..."
+    log_warning "Scale-down alarms need time to detect reduced load and trigger scale-down."
+    sleep 120
 fi
-
-log_info "Waiting 2 minutes for scale-down stabilization..."
-log_warning "Scale-down alarms need time to detect reduced load and trigger scale-down."
-sleep 120
 
 # =============================================================================
 # TEST 2: Memory-Based Autoscaling
 # =============================================================================
-print_header "TEST 2: Memory-Based Autoscaling (Target: >60%)"
+if [ "$RUN_MEMORY_TEST" = true ]; then
+    print_header "TEST 2: Memory-Based Autoscaling (Target: >60%)"
 
-log_info "Starting memory load scenario at 85% for ${SCENARIO_DURATION}s..."
-response=$(curl -sf -X POST "$APP_URL/api/scenario/memory/start?targetMemoryPercent=85&durationSeconds=$SCENARIO_DURATION")
-echo "$response" | jq . 2>/dev/null || echo "$response"
+    log_info "Starting IMMEDIATE memory spike to 95% for ${SCENARIO_DURATION}s..."
+    response=$(curl -sf -X POST "$APP_URL/api/scenario/memory/start?targetMemoryPercent=95&durationSeconds=$SCENARIO_DURATION")
+    echo "$response" | jq . 2>/dev/null || echo "$response"
 
-if [[ $response == *"started"* ]] || [[ $response == *"already running"* ]]; then
-    log_success "Memory load scenario initiated"
-    
-    # Generate additional load with direct memory allocations
-    log_info "Adding parallel memory load (8 concurrent workers)..."
-    generate_load "/api/memory?sizeMB=50" 8 $((SCENARIO_DURATION / 2))
-    
-    log_info "Monitoring for 5 minutes. Watch for scaling events..."
-    log_warning "Alarms take ~5 minutes to trigger. New instances take ~2-3 minutes to deploy."
-    for i in {1..10}; do
-        sleep $MONITOR_INTERVAL
-        instance_count=$(count_container_instances)
-        log_info "Status check $i/10 ($(($i * $MONITOR_INTERVAL))s elapsed) - Instances: $instance_count"
-        get_scenario_status | jq '{memory_active: .memory_scenario_active, memory_used_mb: .current_memory_used_mb, memory_max_mb: .current_memory_max_mb, memory_percent: .current_memory_percent}' 2>/dev/null || get_scenario_status
-    done
-    
-    # Stop background load generation
-    pkill -P $$ curl 2>/dev/null || true
-    
-    log_info "Stopping memory load scenario..."
-    curl -sf -X POST "$APP_URL/api/scenario/memory/stop" | jq . 2>/dev/null || echo "Stopped"
-    log_success "Memory scenario completed"
-else
-    log_error "Failed to start memory scenario"
+    if [[ $response == *"started"* ]] || [[ $response == *"already running"* ]]; then
+        log_success "Memory load scenario initiated - spiking to 95%"
+        
+        log_info "Waiting 10 seconds for memory to reach 95%..."
+        sleep 10
+        
+        # Generate additional MAXIMUM load with direct memory allocations
+        log_info "Adding MAXIMUM parallel memory load (20 concurrent workers)..."
+        generate_load "/api/memory?sizeMB=150" 20 $((SCENARIO_DURATION / 2))
+        
+        log_info "Monitoring for 10 minutes. Watch for scaling events..."
+        log_warning "Alarms take ~1-2 minutes to trigger. New instances take ~2-3 minutes to deploy."
+        for i in {1..30}; do
+            sleep $MONITOR_INTERVAL
+            instance_count=$(count_container_instances)
+            log_info "Status check $i/30 ($(($i * $MONITOR_INTERVAL))s elapsed) - Instances: $instance_count"
+            get_scenario_status | jq '{memory_active: .memory_scenario_active, memory_used_mb: .current_memory_used_mb, memory_max_mb: .current_memory_max_mb, memory_percent: .current_memory_percent}' 2>/dev/null || get_scenario_status
+        done
+        
+        # Stop background load generation
+        pkill -P $$ curl 2>/dev/null || true
+        
+        log_info "Stopping memory load scenario..."
+        curl -sf -X POST "$APP_URL/api/scenario/memory/stop" | jq . 2>/dev/null || echo "Stopped"
+        log_success "Memory scenario completed"
+    else
+        log_error "Failed to start memory scenario"
+    fi
+
+    log_info "Waiting 2 minutes for scale-down stabilization..."
+    log_warning "Scale-down alarms need time to detect reduced load and trigger scale-down."
+    sleep 120
 fi
 
-log_info "Waiting 2 minutes for scale-down stabilization..."
-log_warning "Scale-down alarms need time to detect reduced load and trigger scale-down."
-sleep 120
-
 # =============================================================================
-# TEST 3: Health Check Failure-Based Autoscaling
+# TEST 3: Health Check Failure-Based Autoscaling (High Latency)
 # =============================================================================
-print_header "TEST 3: Health Check Failure (Non-200 responses)"
+if [ "$RUN_LATENCY_TEST" = true ]; then
+    print_header "TEST 3: Health Check Failure (Non-200 responses / High Latency)"
 
-log_info "Triggering health check failures for ${SCENARIO_DURATION}s..."
-response=$(curl -sf -X POST "$APP_URL/api/scenario/health/fail?durationSeconds=$SCENARIO_DURATION")
-echo "$response" | jq . 2>/dev/null || echo "$response"
+    log_info "Triggering health check failures for ${SCENARIO_DURATION}s..."
+    response=$(curl -sf -X POST "$APP_URL/api/scenario/health/fail?durationSeconds=$SCENARIO_DURATION")
+    echo "$response" | jq . 2>/dev/null || echo "$response"
 
-if [[ $response == *"failing"* ]]; then
-    log_success "Health check failure scenario initiated"
-    
-    log_info "Waiting 60 seconds for health checks to fail..."
-    log_warning "Load balancer health checks run every 10 seconds with 3 retries."
-    sleep 60
-    
-    log_info "Testing health endpoint (should return non-200):"
-    health_status=$(curl -sw "\nHTTP Status: %{http_code}\n" "$APP_URL/api/scenario/health/status" 2>/dev/null || echo "Failed to connect")
-    echo "$health_status"
-    
-    if [[ $health_status == *"503"* ]] || [[ $health_status == *"500"* ]]; then
-        log_success "Health check is correctly failing"
+    if [[ $response == *"failing"* ]]; then
+        log_success "Health check failure scenario initiated"
+        
+        log_info "Waiting 60 seconds for health checks to fail..."
+        log_warning "Load balancer health checks run every 10 seconds with 3 retries."
+        sleep 60
+        
+        log_info "Testing health endpoint (should return non-200):"
+        health_status=$(curl -sw "\nHTTP Status: %{http_code}\n" "$APP_URL/api/scenario/health/status" 2>/dev/null || echo "Failed to connect")
+        echo "$health_status"
+        
+        if [[ $health_status == *"503"* ]] || [[ $health_status == *"500"* ]]; then
+            log_success "Health check is correctly failing"
+        else
+            log_warning "Health check may not be failing as expected"
+        fi
+        
+        log_info "Monitoring for 3 minutes. Watch for backend failures and scaling..."
+        log_warning "Alarms trigger when >50% of backends are unhealthy."
+        for i in {1..6}; do
+            sleep 30
+            instance_count=$(count_container_instances)
+            log_info "Check $i/6 ($(($i * 30))s elapsed) - Instances: $instance_count - Backends should be marked unhealthy"
+        done
+        
+        log_info "Recovering health checks..."
+        curl -sf -X POST "$APP_URL/api/scenario/health/recover" | jq . 2>/dev/null || echo "Recovered"
+        
+        log_info "Verifying health recovered..."
+        sleep 5
+        if check_app_health; then
+            log_success "Health checks restored successfully"
+        else
+            log_warning "Health may still be recovering..."
+        fi
     else
-        log_warning "Health check may not be failing as expected"
+        log_error "Failed to start health failure scenario"
     fi
-    
-    log_info "Monitoring for 3 minutes. Watch for backend failures and scaling..."
-    log_warning "Alarms trigger when >50% of backends are unhealthy."
-    for i in {1..6}; do
-        sleep 30
-        instance_count=$(count_container_instances)
-        log_info "Check $i/6 ($(($i * 30))s elapsed) - Instances: $instance_count - Backends should be marked unhealthy"
-    done
-    
-    log_info "Recovering health checks..."
-    curl -sf -X POST "$APP_URL/api/scenario/health/recover" | jq . 2>/dev/null || echo "Recovered"
-    
-    log_info "Verifying health recovered..."
-    sleep 5
-    if check_app_health; then
-        log_success "Health checks restored successfully"
-    else
-        log_warning "Health may still be recovering..."
-    fi
-else
-    log_error "Failed to start health failure scenario"
 fi
 
 # =============================================================================

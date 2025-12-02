@@ -1,6 +1,6 @@
 schema_version: 20180708
 name: scale-down
-version: 0.0.12
+version: 0.0.21
 runtime: python
 build_image: fnproject/python:3.11-dev
 run_image: fnproject/python:3.11

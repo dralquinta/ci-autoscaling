@@ -277,7 +277,7 @@ configure_function_env() {
   "COMPARTMENT_OCID": "$COMPARTMENT_OCID",
   "SUBNET_OCID": "$SUBNET_OCID",
   "AD_NAME": "$AD_NAME",
-  "IMAGE_URI": "$IMAGE_URI",
+  "CONTAINER_IMAGE_URI": "${CONTAINER_IMAGE_URI:-$IMAGE_URI}",
   "CONTAINER_NAME": "$CONTAINER_NAME",
   "DISPLAY_NAME_PREFIX": "$DISPLAY_NAME_PREFIX",
   "MEMORY_GB": "$MEMORY_GB",
@@ -393,6 +393,7 @@ create_alarm() {
     local THRESHOLD=$3
     local OPERATOR=$4
     local FUNCTION_OCID=$5
+    local FORCE_RECREATE=${6:-false}
     
     log "Creating alarm: $ALARM_NAME"
     
@@ -405,14 +406,34 @@ create_alarm() {
         --query 'data[0].id' --raw-output 2>/dev/null || echo "")
     
     if [ -n "$EXISTING_ALARM" ] && [ "$EXISTING_ALARM" != "null" ]; then
-        log "Alarm already exists: $EXISTING_ALARM"
-        return 0
+        if [ "$FORCE_RECREATE" = "true" ]; then
+            log "Alarm exists, deleting and recreating: $EXISTING_ALARM"
+            oci monitoring alarm delete --alarm-id "$EXISTING_ALARM" --force 2>/dev/null || true
+            sleep 2
+        else
+            log "Alarm already exists: $EXISTING_ALARM"
+            return 0
+        fi
     fi
     
-    # Build metric query - monitor all instances with our prefix
-    METRIC_QUERY="$METRIC_NAME[${ALARM_EVALUATION_PERIOD}m]{resourceDisplayName =~ \"$DISPLAY_NAME_PREFIX*\"}.mean()"
+    # Build metric query with threshold comparison embedded
+    # OCI Monitoring uses the query format: metric[period]{dimensions}.aggregation() operator threshold
+    # Use max() for GREATER_THAN (scale-up) to trigger when ANY instance is high
+    # Use mean() for LESS_THAN (scale-down) to ensure all instances are low before scaling down
+    case "$OPERATOR" in
+        "GREATER_THAN")
+            METRIC_QUERY="$METRIC_NAME[${ALARM_EVALUATION_PERIOD}m]{resourceDisplayName =~ \"$DISPLAY_NAME_PREFIX*\"}.max() > $THRESHOLD"
+            ;;
+        "LESS_THAN")
+            METRIC_QUERY="$METRIC_NAME[${ALARM_EVALUATION_PERIOD}m]{resourceDisplayName =~ \"$DISPLAY_NAME_PREFIX*\"}.mean() < $THRESHOLD"
+            ;;
+        *)
+            error "Unknown operator: $OPERATOR"
+            return 1
+            ;;
+    esac
     
-    # Create alarm
+    # Create alarm with fast trigger (10 seconds pending duration)
     cmd "oci monitoring alarm create --compartment-id $COMPARTMENT_OCID --display-name $ALARM_NAME --destinations '[\"$NOTIFICATION_TOPIC_OCID\"]' --namespace oci_computecontainerinstance --query-text '$METRIC_QUERY'"
     ALARM_OCID=$(oci monitoring alarm create \
         --compartment-id "$COMPARTMENT_OCID" \
@@ -426,7 +447,9 @@ create_alarm() {
         --severity "WARNING" \
         --body "Autoscaling alarm $ALARM_NAME triggered" \
         --message-format "PRETTY_JSON" \
-        --repeat-notification-duration "PT${ALARM_FREQUENCY}M" \
+        --evaluation-slack-duration "PT3M" \
+        --pending-duration "PT1M" \
+        --repeat-notification-duration "PT1M" \
         --query 'data.id' --raw-output)
     
     log "Alarm created: $ALARM_OCID"
@@ -457,7 +480,7 @@ create_alarm_health_check() {
     # This metric tracks backends that return non-200 status codes or timeout > 5 seconds
     METRIC_QUERY="UnHealthyBackendCount[${ALARM_EVALUATION_PERIOD}m]{loadBalancerId=\"$LB_OCID\", backendSetName=\"$BACKEND_SET_NAME\"}.mean() / TotalBackendCount[${ALARM_EVALUATION_PERIOD}m]{loadBalancerId=\"$LB_OCID\", backendSetName=\"$BACKEND_SET_NAME\"}.mean() * 100"
     
-    # Create alarm
+    # Create alarm with fast trigger (10 seconds pending duration)
     cmd "oci monitoring alarm create --compartment-id $COMPARTMENT_OCID --display-name $ALARM_NAME --destinations '[\"$NOTIFICATION_TOPIC_OCID\"]' --namespace oci_lbaas --query-text '$METRIC_QUERY'"
     ALARM_OCID=$(oci monitoring alarm create \
         --compartment-id "$COMPARTMENT_OCID" \
@@ -471,7 +494,9 @@ create_alarm_health_check() {
         --severity "CRITICAL" \
         --body "Health check failure: ${THRESHOLD}% of backends are unhealthy" \
         --message-format "PRETTY_JSON" \
-        --repeat-notification-duration "PT${ALARM_FREQUENCY}M" \
+        --evaluation-slack-duration "PT3M" \
+        --pending-duration "PT1M" \
+        --repeat-notification-duration "PT1M" \
         --query 'data.id' --raw-output)
     
     log "Health check alarm created: $ALARM_OCID"
@@ -786,33 +811,38 @@ deploy_alarms_only() {
         "CpuUtilization" \
         "$CPU_SCALE_UP_THRESHOLD" \
         "GREATER_THAN" \
-        "$SCALE_UP_FUNCTION_OCID"
+        "$SCALE_UP_FUNCTION_OCID" \
+        "true"
     
     create_alarm \
         "ci-autoscaling-cpu-low" \
         "CpuUtilization" \
         "$CPU_SCALE_DOWN_THRESHOLD" \
         "LESS_THAN" \
-        "$SCALE_DOWN_FUNCTION_OCID"
+        "$SCALE_DOWN_FUNCTION_OCID" \
+        "true"
     
     create_alarm \
         "ci-autoscaling-memory-high" \
         "MemoryUtilization" \
         "$MEMORY_SCALE_UP_THRESHOLD" \
         "GREATER_THAN" \
-        "$SCALE_UP_FUNCTION_OCID"
+        "$SCALE_UP_FUNCTION_OCID" \
+        "true"
     
     create_alarm \
         "ci-autoscaling-memory-low" \
         "MemoryUtilization" \
         "$MEMORY_SCALE_DOWN_THRESHOLD" \
         "LESS_THAN" \
-        "$SCALE_DOWN_FUNCTION_OCID"
+        "$SCALE_DOWN_FUNCTION_OCID" \
+        "true"
     
     create_alarm_health_check \
         "ci-autoscaling-health-critical" \
         "$HEALTH_FAILURE_THRESHOLD" \
-        "$SCALE_UP_FUNCTION_OCID"
+        "$SCALE_UP_FUNCTION_OCID" \
+        "true"
     
     echo ""
     log "====== Autoscaling Alarms Deployed ======"
