@@ -356,8 +356,8 @@ cleanup() {
 ###############################################################################
 
 case "${1:-}" in
-    --setup)
-        log "====== Setting up IAM resources for autoscaling ======"
+    --deploy)
+        log "====== Setting up IAM resources for autoscaling ======
         create_dynamic_group
         echo ""
         create_policy
@@ -372,16 +372,16 @@ case "${1:-}" in
     --status)
         show_status
         ;;
-    --cleanup)
+    --undeploy)
         cleanup
         ;;
     *)
-        echo "Usage: $0 {--setup|--status|--cleanup}"
+        echo "Usage: $0 {--deploy|--status|--undeploy}"
         echo ""
         echo "Commands:"
-        echo "  --setup     Create dynamic group and policy for autoscaling functions"
+        echo "  --deploy    Create dynamic group and policy for autoscaling functions"
         echo "  --status    Show current IAM resources status"
-        echo "  --cleanup   Delete dynamic group and policy"
+        echo "  --undeploy  Delete dynamic group and policy"
         exit 1
         ;;
 esac

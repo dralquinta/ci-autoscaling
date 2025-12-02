@@ -79,6 +79,7 @@ Deploy or undeploy autoscaling-demo Spring Boot application to OCI Container Ins
 OPTIONS:
     --deploy                 Deploy the container instance
     --undeploy               Undeploy (destroy) the container instance
+    --status                 Show current container instance status
     --help                   Display this help message and exit
 
 ENVIRONMENT VARIABLES:
@@ -155,6 +156,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --undeploy)
             DEPLOY_MODE="undeploy"
+            shift
+            ;;
+        --status)
+            DEPLOY_MODE="status"
             shift
             ;;
         --skip-docker)
@@ -885,4 +890,7 @@ if [ "$DEPLOY_MODE" == "deploy" ]; then
     deploy
 elif [ "$DEPLOY_MODE" == "undeploy" ]; then
     undeploy
+elif [ "$DEPLOY_MODE" == "status" ]; then
+    log "Container Instance Status:"
+    oci container-instances container-instance list --compartment-id "$OCI_COMPARTMENT_OCID" --display-name "$DISPLAY_NAME" --lifecycle-state ACTIVE --query 'data[*].{"Display Name":"display-name","State":"lifecycle-state","Created":"time-created"}' --output table
 fi

@@ -81,6 +81,165 @@ Tests both CPU and memory simultaneously.
   - `cpuIterations` (optional, default: 500)
   - `memoryMB` (optional, default: 5)
 
+## Architecture
+
+Simple ASCII diagram showing how components interact:
+
+```
+                               +--------------------+
+                               |  OCI Monitoring    |
+                               |  (Alarms / MQL)    |
+                               +---------+----------+
+                                         |
+                                         v
+    Internet --> [Load Balancer] --> [Container Instances Pool]
+                             ^           ^    ^
+                             |           |    |
+                             |           |    +-- scale-down fn (terminates instance)
+                             |           +------- scale-up fn (creates instance)
+                             |                   (functions run as OCI Functions)
+                             |
+                       Users / Tests
+
+
+```
+
+
+Notes:
+- The Load Balancer exposes the service publicly on port 8080.
+- OCI Monitoring alarms trigger OCI Functions (scale-up / scale-down).
+- Functions use the Container Instances API to create/terminate instances and register/deregister backends with the Load Balancer.
+
+## Component Diagram
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                         OCI Tenancy                                │
+│                                                                    │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │              OCI Monitoring & Alarms                          │ │
+│  │                                                               │ │
+│  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐ │ │
+│  │  │ CPU High Alarm │  │ CPU Low Alarm  │  │ Memory High    │ │ │
+│  │  │ Threshold:70%  │  │ Threshold:30%  │  │ Alarm 70%      │ │ │
+│  │  │ Period: 5min   │  │ Period: 5min   │  │ Period: 5min   │ │ │
+│  │  └────────┬───────┘  └────────┬───────┘  └────────┬───────┘ │ │
+│  │           │                    │                    │         │ │
+│  │           └────────────┬───────┴────────────────────┘         │ │
+│  │                        │                                      │ │
+│  └────────────────────────┼──────────────────────────────────────┘ │
+│                           │                                        │
+│  ┌────────────────────────▼──────────────────────────────────────┐ │
+│  │         OCI Notifications Service                             │ │
+│  │  ┌──────────────────────────────────────────────────────────┐ │ │
+│  │  │  Topic: ci-autoscaling-notifications                     │ │ │
+│  │  │  Subscriptions:                                          │ │ │
+│  │  │    - Scale-Up Function (on alarm FIRING)                 │ │ │
+│  │  │    - Scale-Down Function (on alarm OK)                   │ │ │
+│  │  │    - Email (optional)                                    │ │ │
+│  │  └──────────────────────────────────────────────────────────┘ │ │
+│  └────────────────┬──────────────────────┬──────────────────────┘ │
+│                   │                      │                        │
+│  ┌────────────────▼─────────┐  ┌────────▼─────────────────────┐  │
+│  │   OCI Functions          │  │   OCI Functions              │  │
+│  │   App: ci-autoscaling    │  │   App: ci-autoscaling        │  │
+│  │                          │  │                              │  │
+│  │  ┌─────────────────────┐ │  │  ┌─────────────────────────┐│  │
+│  │  │  scale-up-function  │ │  │  │ scale-down-function     ││  │
+│  │  │                     │ │  │  │                         ││  │
+│  │  │  1. Check max limit │ │  │  │  1. Check min limit     ││  │
+│  │  │  2. Create CI       │ │  │  │  2. Select oldest CI    ││  │
+│  │  │  3. Wait ACTIVE     │ │  │  │  3. Remove from LB      ││  │
+│  │  │  4. Get private IP  │ │  │  │  4. Delete CI           ││  │
+│  │  │  5. Create backend  │ │  │  │                         ││  │
+│  │  │  6. Add to LB       │ │  │  │                         ││  │
+│  │  └─────────┬───────────┘ │  │  └─────────┬───────────────┘│  │
+│  └────────────┼─────────────┘  └────────────┼────────────────┘  │
+│               │                              │                   │
+│  ┌────────────▼──────────────────────────────▼──────────────┐   │
+│  │           Container Instances (CI)                        │   │
+│  │                                                            │   │
+│  │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌─────┐   │   │
+│  │  │ Instance-1│  │Instance-2 │  │Instance-3 │  │ ... │   │   │
+│  │  │ ACTIVE    │  │ ACTIVE    │  │ ACTIVE    │  │     │   │   │
+│  │  │ 10.0.10.10│  │10.0.10.11 │  │10.0.10.12 │  │     │   │   │
+│  │  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └──┬──┘   │   │
+│  │        │               │               │           │      │   │
+│  └────────┼───────────────┼───────────────┼───────────┼──────┘   │
+│           │               │               │           │          │
+│  ┌────────▼───────────────▼───────────────▼───────────▼───────┐  │
+│  │              Load Balancer (Public)                         │  │
+│  │              IP: 165.1.66.58                                │  │
+│  │                                                             │  │
+│  │  Backend Set: autoscaling-demo-backend-set                 │  │
+│  │    Policy: ROUND_ROBIN                                     │  │
+│  │    Health Check: HTTP /actuator/health:8080                │  │
+│  │                                                             │  │
+│  │  Backends:                                                  │  │
+│  │    - 10.0.10.10:8080 (weight: 1, healthy)                  │  │
+│  │    - 10.0.10.11:8080 (weight: 1, healthy)                  │  │
+│  │    - 10.0.10.12:8080 (weight: 1, healthy)                  │  │
+│  └─────────────────────────┬───────────────────────────────────┘  │
+│                            │                                      │
+└────────────────────────────┼──────────────────────────────────────┘
+                             │
+                    ┌────────▼─────────┐
+                    │  Internet Users  │
+                    │                  │
+                    │  http://LB-IP/   │
+                    └──────────────────┘
+```
+
+
+## Deployment (OCI recommended order)
+
+Follow this exact sequence to deploy the full autoscaling demo in OCI. These commands assume you have sourced the relevant environment files (`autoscaling/autoscaling.env` or `deploy.env`) and have `oci`, `fn`, and `docker` configured.
+
+1. Create the Load Balancer:
+
+```bash
+./loadbalancer.sh --deploy
+```
+
+2. Deploy the application (initial container / image):
+
+```bash
+./app.sh --deploy
+```
+
+3. Deploy autoscaling components (functions, alarms, etc):
+
+```bash
+./setup-autoscaling.sh --deploy
+```
+
+4. Create IAM dynamic groups and policy statements required by Functions and Container Instances:
+
+```bash
+./setup-iam-policies.sh --deploy
+```
+
+5. Run the CPU high load test:
+
+```bash
+./test-autoscaling.sh --high-cpu
+```
+
+6. Run the Memory high load test:
+
+```bash
+./test-autoscaling.sh --high-memory
+```
+
+7. Run the High latency test:
+
+```bash
+./test-autoscaling.sh --high-latency
+```
+
+For any other details about architecture, alarms, and configuration, see the `docs/autoscaling` directory.
+
+
 ## Quick Start
 
 ### Option 1: Deploy to OCI Container Instances (Recommended)

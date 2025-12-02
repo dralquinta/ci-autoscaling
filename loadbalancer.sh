@@ -65,8 +65,9 @@ Usage: ./loadbalancer.sh [OPTIONS]
 Manage OCI Load Balancer for autoscaling-demo application.
 
 OPTIONS:
-    --create     Create a new OCI Load Balancer with backend set and listener
-    --destroy    Destroy the existing Load Balancer
+    --deploy     Create a new OCI Load Balancer with backend set and listener
+    --undeploy   Destroy the existing Load Balancer
+    --status     Show current load balancer status
     --help       Display this help message and exit
 
 ENVIRONMENT VARIABLES:
@@ -80,22 +81,22 @@ ENVIRONMENT VARIABLES:
 
 EXAMPLES:
     # Create load balancer
-    ./loadbalancer.sh --create
+    ./loadbalancer.sh --deploy
     
     # Destroy load balancer
     export LB_OCID=ocid1.loadbalancer.oc1...
-    ./loadbalancer.sh --destroy
+    ./loadbalancer.sh --undeploy
     
     # Create with custom bandwidth
     export LB_MIN_BANDWIDTH_MBPS=50
     export LB_MAX_BANDWIDTH_MBPS=200
-    ./loadbalancer.sh --create
+    ./loadbalancer.sh --deploy
 
 WORKFLOW:
-    1. Run ./loadbalancer.sh --create to create the load balancer
+    1. Run ./loadbalancer.sh --deploy to create the load balancer
     2. Save the LB_OCID from the output
     3. Set LB_OCID in deploy.env for container deployments
-    4. Run ./loadbalancer.sh --destroy when no longer needed
+    4. Run ./loadbalancer.sh --undeploy when no longer needed
 
 NOTES:
     - The load balancer is created with a backend set and HTTP listener
@@ -399,12 +400,16 @@ destroy_load_balancer() {
 ACTION=""
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --create)
+        --deploy)
             ACTION="create"
             shift
             ;;
-        --destroy)
+        --undeploy)
             ACTION="destroy"
+            shift
+            ;;
+        --status)
+            ACTION="status"
             shift
             ;;
         --help|-h)
@@ -419,7 +424,7 @@ done
 # Main execution
 main() {
     if [ -z "$ACTION" ]; then
-        error "No action specified. Use --create or --destroy. Run with --help for more information."
+        error "No action specified. Use --deploy, --undeploy, or --status. Run with --help for more information."
     fi
     
     log "Starting Load Balancer management for autoscaling-demo..."
@@ -435,8 +440,15 @@ main() {
         destroy)
             destroy_load_balancer
             ;;
+        status)
+            if [ -z "$LB_OCID" ]; then
+                error "LB_OCID not set. Cannot check status."
+            fi
+            log "Load Balancer Status:"
+            oci lb load-balancer get --load-balancer-id "$LB_OCID" --query 'data.{\"Display Name\":\"display-name\",\"State\":\"lifecycle-state\",\"IP\":\"ip-addresses\"[0].\"ip-address\"}' --output table
+            ;;
         *)
-            error "Invalid action: $ACTION"
+            error \"Invalid action: $ACTION\"
             ;;
     esac
     
