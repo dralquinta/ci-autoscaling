@@ -2,6 +2,24 @@
 
 A simple Spring Boot application designed to test autoscaling features in Docker and OCI Container Instances. This application provides REST endpoints to generate CPU and memory load for testing horizontal pod autoscaling (HPA) and container orchestration systems.
 
+## Demo Video
+
+Watch the complete autoscaling demo in action:
+
+<div align="center">
+  <a href="https://youtu.be/WUjFlLIa5YA">
+    <img src="https://img.youtube.com/vi/WUjFlLIa5YA/maxresdefault.jpg" alt="OCI Container Instances Autoscaling Demo" style="width:100%;max-width:800px;">
+  </a>
+  <p><em>Click the image above to watch the demo video</em></p>
+</div>
+
+This video demonstrates:
+- Deploying container instances to OCI
+- Configuring autoscaling with OCI Functions
+- Load testing and triggering scale-up events
+- Monitoring instance creation and load balancer registration
+- Observing scale-down behavior when load decreases
+
 ## Features
 
 - **CPU Load Testing**: Endpoint to generate CPU-intensive workload

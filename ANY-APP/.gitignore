@@ -1,0 +1,63 @@
+# Ignore environment configuration files
+app.env
+autoscaling/autoscaling.env
+
+# Ignore built artifacts
+Dockerfile
+docker-compose.yml
+*.jar
+*.war
+target/
+build/
+dist/
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Ignore IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Ignore logs
+*.log
+logs/
+
+# Ignore temporary files
+tmp/
+temp/
+*.tmp
+
+# Ignore Docker volumes
+data/
+volumes/
+
+# Ignore secrets and credentials
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Keep template files
+!*.template
+
+# Application source code directory
+# Users should manage their own .gitignore in application-source-code/
+# Example files (*.example) are kept in git
+!application-source-code/*.example
+!application-source-code/README.md
+!application-source-code/EXAMPLES.md
+!application-source-code/.gitignore
