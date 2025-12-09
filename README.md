@@ -2,6 +2,33 @@
 
 A simple Spring Boot application designed to test autoscaling features in Docker and OCI Container Instances. This application provides REST endpoints to generate CPU and memory load for testing horizontal pod autoscaling (HPA) and container orchestration systems.
 
+## 📦 Deploy ANY Application with Autoscaling
+
+Looking to deploy your own application (not just this demo) with the same autoscaling capabilities? Check out the **ANY-APP** template:
+
+**[ANY-APP Documentation →](ANY-APP/README.md)**
+
+The ANY-APP template provides a production-ready, generic framework for deploying any containerized application to OCI Container Instances with automated horizontal autoscaling. It supports:
+- ✅ Multiple runtimes: Node.js, Python, Java, Go, .NET, and more
+- ✅ One-command deployment with `deploy.sh`
+- ✅ Automatic CPU and memory-based autoscaling
+- ✅ Load balancer integration
+- ✅ Complete documentation and examples
+
+Quick start with ANY-APP:
+```bash
+cd ANY-APP
+cp app.env.template app.env
+# Add your application code to application-source-code/
+# Edit app.env with your OCI details
+source app.env
+./deploy.sh --build-and-push --deploy
+```
+
+See the [ANY-APP Quick Start Guide](ANY-APP/QUICKSTART.md) for a 15-minute walkthrough.
+
+---
+
 ## Demo Video
 
 Watch the complete autoscaling demo in action:
