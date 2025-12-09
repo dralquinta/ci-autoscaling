@@ -1,0 +1,42 @@
+# Keep example files in git
+!*.example
+!EXAMPLES.md
+!README.md
+
+# Ignore actual application files (users add their own)
+# Uncomment these based on your application type:
+
+# Node.js
+# node_modules/
+# package-lock.json
+# npm-debug.log
+# yarn-error.log
+
+# Python
+# __pycache__/
+# *.pyc
+# *.pyo
+# *.pyd
+# .Python
+# env/
+# venv/
+# *.egg-info/
+
+# Java
+# target/
+# *.class
+# *.jar
+# *.war
+
+# Go
+# vendor/
+# *.exe
+
+# IDE
+# .vscode/
+# .idea/
+# *.swp
+
+# OS
+# .DS_Store
+# Thumbs.db

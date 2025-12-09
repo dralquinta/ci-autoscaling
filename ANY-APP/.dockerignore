@@ -1,0 +1,62 @@
+# Exclude documentation files from Docker build context
+README.md
+QUICKSTART.md
+INDEX.md
+OVERVIEW.md
+*.md
+!application-source-code/**
+
+# Exclude configuration templates
+*.template
+app.env
+app.env.sample
+
+# Exclude deployment scripts
+deploy.sh
+scripts/
+
+# Exclude autoscaling infrastructure
+autoscaling/
+
+# Exclude git files
+.git
+.gitignore
+
+# Exclude example files (they should be renamed without .example)
+application-source-code/*.example
+
+# Common development files to exclude
+.vscode/
+.idea/
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Exclude node_modules if present outside application-source-code
+node_modules/
+!application-source-code/node_modules/
+
+# Exclude Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+!application-source-code/**/__pycache__/
+
+# Exclude Java build artifacts outside application-source-code
+target/
+!application-source-code/target/
+
+# Exclude Go build artifacts
+*.exe
+*.test
+go.sum
+!application-source-code/go.sum
+
+# Exclude temporary files
+tmp/
+temp/
+*.tmp

@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Build context is current directory (ANY-APP)
+      # Dockerfile will copy from application-source-code/
+    image: ${DOCKER_REGISTRY}/${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}
+    container_name: ${CONTAINER_NAME}
+    ports:
+      - "${APP_PORT}:${APP_PORT}"
+    environment:
+      # Add your application-specific environment variables here
+      - APP_ENV=${APP_ENV:-production}
+      - APP_PORT=${APP_PORT}
+      # Example for Node.js:
+      # - NODE_ENV=production
+      # Example for Python:
+      # - PYTHONUNBUFFERED=1
+      # Example for Java:
+      # - JAVA_OPTS=-Xmx512m -Xms256m
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${APP_PORT}${HEALTH_CHECK_PATH}"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - app-network
+    # Uncomment if you need volumes
+    # volumes:
+    #   - ./data:/app/data
+
+networks:
+  app-network:
+    driver: bridge

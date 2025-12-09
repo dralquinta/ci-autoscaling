@@ -1,0 +1,133 @@
+# Generic Dockerfile Template for Any Application
+# This template supports multiple runtime environments
+# Uncomment and modify the sections relevant to your application
+
+#####################################
+# OPTION 1: Node.js Application
+#####################################
+# FROM node:18-alpine AS build
+# WORKDIR /app
+# COPY application-source-code/package*.json ./
+# RUN npm ci --only=production
+# COPY application-source-code/ .
+# # If you have a build step:
+# # RUN npm run build
+# 
+# FROM node:18-alpine
+# WORKDIR /app
+# RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# COPY --from=build /app /app
+# USER appuser
+# EXPOSE ${APP_PORT:-3000}
+# HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+#   CMD wget --no-verbose --tries=1 --spider http://localhost:${APP_PORT:-3000}${HEALTH_CHECK_PATH:-/health} || exit 1
+# CMD ["node", "server.js"]
+
+#####################################
+# OPTION 2: Python Application
+#####################################
+# FROM python:3.11-slim AS build
+# WORKDIR /app
+# COPY application-source-code/requirements.txt .
+# RUN pip install --no-cache-dir -r requirements.txt
+# COPY application-source-code/ .
+# 
+# FROM python:3.11-slim
+# WORKDIR /app
+# RUN useradd -m -u 1000 appuser
+# COPY --from=build /app /app
+# COPY --from=build /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+# USER appuser
+# EXPOSE ${APP_PORT:-8000}
+# HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+#   CMD curl -f http://localhost:${APP_PORT:-8000}${HEALTH_CHECK_PATH:-/health} || exit 1
+# CMD ["python", "app.py"]
+
+#####################################
+# OPTION 3: Java/Spring Boot Application
+#####################################
+# FROM maven:3.9.5-eclipse-temurin-17 AS build
+# WORKDIR /app
+# COPY application-source-code/pom.xml .
+# RUN mvn dependency:go-offline -B
+# COPY application-source-code/src ./src
+# RUN mvn clean package -DskipTests
+# 
+# FROM eclipse-temurin:17-jre-alpine
+# WORKDIR /app
+# RUN addgroup -S spring && adduser -S spring -G spring
+# USER spring:spring
+# COPY --from=build /app/target/*.jar app.jar
+# EXPOSE ${APP_PORT:-8080}
+# HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+#   CMD wget --no-verbose --tries=1 --spider http://localhost:${APP_PORT:-8080}${HEALTH_CHECK_PATH:-/actuator/health} || exit 1
+# ENTRYPOINT ["java", "-jar", "app.jar"]
+
+#####################################
+# OPTION 4: Go Application
+#####################################
+# FROM golang:1.21-alpine AS build
+# WORKDIR /app
+# COPY application-source-code/go.mod application-source-code/go.sum ./
+# RUN go mod download
+# COPY application-source-code/ .
+# RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+# 
+# FROM alpine:latest
+# WORKDIR /app
+# RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# COPY --from=build /app/main .
+# USER appuser
+# EXPOSE ${APP_PORT:-8080}
+# HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+#   CMD wget --no-verbose --tries=1 --spider http://localhost:${APP_PORT:-8080}${HEALTH_CHECK_PATH:-/health} || exit 1
+# CMD ["./main"]
+
+#####################################
+# OPTION 5: .NET Application
+#####################################
+# FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+# WORKDIR /app
+# COPY application-source-code/*.csproj ./
+# RUN dotnet restore
+# COPY application-source-code/ .
+# RUN dotnet publish -c Release -o out
+# 
+# FROM mcr.microsoft.com/dotnet/aspnet:8.0
+# WORKDIR /app
+# COPY --from=build /app/out .
+# EXPOSE ${APP_PORT:-5000}
+# HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+#   CMD curl -f http://localhost:${APP_PORT:-5000}${HEALTH_CHECK_PATH:-/health} || exit 1
+# ENTRYPOINT ["dotnet", "YourApp.dll"]
+
+#####################################
+# OPTION 6: Nginx Static Content
+#####################################
+# FROM nginx:alpine
+# COPY application-source-code/nginx.conf /etc/nginx/nginx.conf
+# COPY application-source-code/dist /usr/share/nginx/html
+# EXPOSE ${APP_PORT:-80}
+# HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+#   CMD wget --no-verbose --tries=1 --spider http://localhost:${APP_PORT:-80}${HEALTH_CHECK_PATH:-/} || exit 1
+# CMD ["nginx", "-g", "daemon off;"]
+
+#####################################
+# DEFAULT: Replace with your application
+#####################################
+FROM alpine:latest
+WORKDIR /app
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Add your application files from the application-source-code directory
+COPY application-source-code/ .
+
+USER appuser
+EXPOSE 8080
+
+# Configure health check for your application
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Replace with your application start command
+CMD ["echo", "Replace this with your application start command"]
