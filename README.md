@@ -27,6 +27,13 @@ source app.env
 
 See the [ANY-APP Quick Start Guide](ANY-APP/QUICKSTART.md) for a 15-minute walkthrough.
 
+
+This architecture is based on the following document: [Autoscale Oracle Container Instances](https://docs.oracle.com/en/solutions/autoscale-oracle-container-instances/#GUID-2796F988-7CBA-4049-8E03-352117950CD1)
+
+This is the reference architecture
+
+![Reference Architecture](./img/ref-arch.png)
+
 ---
 
 ## Demo Video
